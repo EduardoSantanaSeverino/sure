@@ -1,0 +1,132 @@
+<%# locals: (entry:, balance_trend: nil, view_ctx: "global", in_split_group: false) %>
+<% transaction = entry.entryable %>
+<% transaction_security_logo_url = transaction.activity_security&.display_logo_url %>
+
+<%= turbo_frame_tag dom_id(entry) do %>
+  <%= turbo_frame_tag dom_id(transaction) do %>
+    <div class="group flex lg:grid lg:grid-cols-12 items-center text-primary text-xs font-medium py-2 px-3 <%= "pl-6 lg:pl-8" if in_split_group %> border-b border-primary/5 last:border-b-0">
+      <div class="pr-2 lg:pr-3 flex items-center gap-2 lg:gap-3 col-span-4 min-w-0">
+        <%= check_box_tag dom_id(entry, "selection"),
+            disabled: transaction.transfer.present?,
+            class: "checkbox checkbox--light hidden lg:block",
+            data: {
+              id: entry.id,
+              entry_type: entry.entryable_type,
+              "bulk-select-target": "row",
+              action: "bulk-select#toggleRowSelection",
+              checkbox_toggle_target: "selectionEntry"
+            } %>
+
+        <div class="flex md:hidden items-center gap-1 shrink-0">
+          <%= render "transactions/transaction_category", transaction: transaction, variant: "mobile", in_split_group: in_split_group %>
+        </div>
+
+        <div class="hidden lg:flex shrink-0">
+          <% if transaction.transfer? %>
+            <%= render DS::FilledIcon.new(
+              icon: "arrow-right-left",
+              hex_color: Category::TRANSFER_COLOR,
+              size: "sm",
+              rounded: true
+            ) %>
+          <% elsif transaction_security_logo_url.present? %>
+            <%= image_tag Setting.transform_brand_fetch_url(transaction_security_logo_url),
+                class: "w-7 h-7 rounded-full border border-secondary",
+                loading: "lazy" %>
+          <% elsif transaction.merchant&.logo_url.present? %>
+            <%= image_tag Setting.transform_brand_fetch_url(transaction.merchant.logo_url),
+                class: "w-7 h-7 rounded-full border border-secondary",
+                loading: "lazy" %>
+          <% else %>
+            <%= render DS::FilledIcon.new(
+                variant: :text,
+                text: entry.name,
+                size: "sm",
+                rounded: true
+            ) %>
+          <% end %>
+        </div>
+
+        <div class="min-w-0 flex-1 <%= "opacity-50 text-secondary" if entry.excluded %>">
+          <div class="flex items-center gap-1 min-w-0">
+            <div class="truncate">
+              <% if transaction.transfer? %>
+                <%= link_to(
+                      entry.name,
+                      transaction.transfer.present? ? transfer_path(transaction.transfer) : entry_path(entry),
+                      data: { turbo_frame: "drawer", turbo_prefetch: false },
+                      class: "hover:underline truncate"
+                    ) %>
+              <% else %>
+                <%= link_to(
+                      entry.name,
+                      in_split_group ? entry_path(entry, grouped: true) : entry_path(entry),
+                      data: { turbo_frame: "drawer", turbo_prefetch: false },
+                      class: "hover:underline truncate"
+                    ) %>
+              <% end %>
+            </div>
+
+            <div class="flex items-center gap-1 shrink-0">
+              <% if transaction.pending? %>
+                <%= render DS::Pill.new(label: t("transactions.transaction.pending"), tone: :neutral, marker: false, icon: "clock", title: t("transactions.transaction.pending_tooltip")) %>
+              <% end %>
+              <% if transaction.has_potential_duplicate? %>
+                <%= render DS::Pill.new(label: transaction.low_confidence_duplicate? ? t("transactions.transaction.review_recommended") : t("transactions.transaction.possible_duplicate"), tone: transaction.low_confidence_duplicate? ? :neutral : :warning, marker: false, icon: transaction.low_confidence_duplicate? ? "help-circle" : "alert-triangle") %>
+              <% end %>
+              <% if @split_parent_entry_ids ? @split_parent_entry_ids.include?(entry.id) : entry.split_parent? %>
+                <%= render DS::Pill.new(label: t("transactions.transaction.split"), tone: :neutral, marker: false, icon: "split") %>
+              <% end %>
+              <% if entry.split_child? && !in_split_group %>
+                <span class="text-secondary" title="<%= t("transactions.transaction.split_child_tooltip") %>"><%= icon "corner-down-right", size: "sm", color: "current" %></span>
+              <% end %>
+            </div>
+          </div>
+
+          <div class="text-secondary text-[11px] font-normal truncate">
+            <% if transaction.transfer? %>
+              <span><%= transaction.loan_payment? ? t("transactions.show.loan_payment") : t("transactions.show.transfer") %> • <%= entry.account.name %></span>
+            <% else %>
+              <% if transaction.merchant&.present? %>
+                <span class="hidden lg:inline"><%= transaction.merchant.name %> • </span>
+              <% end %>
+              <span class="hidden lg:inline"><%= entry.account.name %></span>
+              <span class="lg:hidden truncate"><%= transaction.merchant&.name || entry.account.name %></span>
+            <% end %>
+          </div>
+        </div>
+      </div>
+
+      <div class="hidden md:flex min-w-0 items-center gap-1 col-span-2">
+        <% if entry.account.supports_trades? && !transaction.transfer? %>
+          <%= render "investment_activity/quick_edit_badge", entry: entry, entryable: transaction %>
+        <% else %>
+          <%= render "transactions/transaction_category", transaction: transaction, variant: "desktop", in_split_group: in_split_group %>
+        <% end %>
+      </div>
+
+      <div class="hidden lg:flex min-w-0 items-center col-span-1">
+        <span class="truncate text-secondary text-xs"><%= entry.account.name %></span>
+      </div>
+
+      <div class="hidden lg:flex min-w-0 col-span-3 px-2">
+        <% if entry.notes.present? %>
+          <span class="whitespace-pre-wrap break-words text-xs text-secondary privacy-sensitive" title="<%= entry.notes %>"><%= entry.notes %></span>
+        <% else %>
+          <span class="text-secondary/40 text-xs">—</span>
+        <% end %>
+      </div>
+
+      <div class="shrink-0 col-span-4 lg:col-span-2 ml-auto flex items-center justify-end gap-2 <%= "opacity-50" if entry.excluded %>">
+        <% if entry.protected_from_sync? && !entry.excluded? %>
+          <%= link_to entry_path(entry), data: { turbo_frame: "drawer", turbo_prefetch: false }, class: "invisible group-hover:visible transition-opacity", title: t("entries.protection.tooltip") do %>
+            <%= icon "lock", size: "sm", class: "text-secondary" %>
+          <% end %>
+        <% end %>
+        <%= content_tag :p,
+            transaction.transfer? && view_ctx == "global" ? "+/- #{format_money(entry.amount_money.abs)}" : format_money(-entry.amount_money),
+            class: ["privacy-sensitive text-xs font-medium", "text-green-600": entry.amount.negative?] %>
+      </div>
+    </div>
+  <% end %>
+<% end %>

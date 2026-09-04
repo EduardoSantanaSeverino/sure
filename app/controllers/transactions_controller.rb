@@ -46,8 +46,17 @@ class TransactionsController < ApplicationController
                          }
                        )
 
-    @pagy, @transactions = pagy(base_scope, limit: safe_per_page(stored_params["per_page"]))
+    effective_per_page = if Current.user.preview_features_enabled? && Current.user.transactions_per_page.present?
+      Current.user.transactions_per_page
+    else
+      stored_params["per_page"]
+    end
+
+    @pagy, @transactions = pagy(base_scope, limit: safe_per_page(effective_per_page))
     Transaction::ActivitySecurityPreloader.new(@transactions).preload
+
+    @compact_view = Current.user.preview_features_enabled? && Current.user.transactions_compact?
+    @group_by_date = Current.user.transactions_group_by_date?
 
     # Preload split parent data
     entry_ids = @transactions.map { |t| t.entry.id }
@@ -630,10 +639,24 @@ class TransactionsController < ApplicationController
 
         params_to_restore[:q] = stored_params["q"].presence || {}
         params_to_restore[:page] = stored_params["page"].presence || 1
-        params_to_restore[:per_page] = stored_params["per_page"].presence || 50
+        per_page_default = if Current.user.preview_features_enabled? && Current.user.transactions_per_page.present?
+          Current.user.transactions_per_page
+        else
+          50
+        end
+        params_to_restore[:per_page] = stored_params["per_page"].presence || per_page_default
 
         redirect_to transactions_path(params_to_restore)
       else
+        # Persist per_page to user preferences when preview is enabled and a valid per_page is present
+        if Current.user.preview_features_enabled? && params[:per_page].present?
+          safe = safe_per_page(params[:per_page])
+          # safe_per_page returns nearest allowed; only persist if it matches the requested value
+          if safe.to_s == params[:per_page].to_s
+            Current.user.update_transaction_preferences("transactions_per_page" => safe) rescue nil
+          end
+        end
+
         Current.session.update!(
           prev_transaction_page_params: {
             q: search_params,
