@@ -171,18 +171,17 @@ class AccountsController < ApplicationController
     @activity_feed_data = Account::ActivityFeedData.new(@account, @entries, split_parents: @split_parents)
 
     # Running balance per entry for flat compact view only (when not grouped by date)
+    # Uses the same per-day closing balance source as the grouped header (Account::ActivityFeedData#balances_by_date)
+    # so flat rows match the grouped accuracy (e.g. Starting Balance / Opening balance rows).
+    # Per-day granularity is intentional: intra-day ordering is not reflected in the balances table,
+    # but it matches the authoritative balance store used elsewhere in the app.
     @running_balances = {}
     if @compact_view && !@group_by_date && @entries.any?
-      # Compute cumulative sum in chronological order for the account (all entries), then pick for current page
-      all_ids_amounts = @account.entries.excluding_split_parents.order(:date, :created_at, :id).pluck(:id, :amount)
-      cumulative = 0.to_d
-      running_map = {}
-      all_ids_amounts.each do |eid, amt|
-        cumulative += amt.to_d
-        running_map[eid] = cumulative
-      end
+      dates = @entries.map(&:date).uniq
+      balances_by_date = @account.balances.where(date: dates, currency: @account.currency).index_by(&:date)
       @entries.each do |e|
-        @running_balances[e.id] = Money.new(running_map[e.id] || 0, @account.currency)
+        bal = balances_by_date[e.date]
+        @running_balances[e.id] = bal ? bal.end_balance_money : Money.new(0, @account.currency)
       end
     end
   end
