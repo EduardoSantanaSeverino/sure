@@ -85,13 +85,23 @@
 
           <div class="text-secondary text-[11px] font-normal truncate">
             <% if transaction.transfer? %>
-              <span><%= transaction.loan_payment? ? t("transactions.show.loan_payment") : t("transactions.show.transfer") %> • <%= entry.account.name %></span>
-            <% else %>
-              <% if transaction.merchant&.present? %>
-                <span class="hidden lg:inline"><%= transaction.merchant.name %> • </span>
+              <% if view_ctx == "account" %>
+                <span><%= transaction.loan_payment? ? t("transactions.show.loan_payment") : t("transactions.show.transfer") %></span>
+              <% else %>
+                <span><%= transaction.loan_payment? ? t("transactions.show.loan_payment") : t("transactions.show.transfer") %> • <%= entry.account.name %></span>
               <% end %>
-              <span class="hidden lg:inline"><%= entry.account.name %></span>
-              <span class="lg:hidden truncate"><%= transaction.merchant&.name || entry.account.name %></span>
+            <% else %>
+              <% if view_ctx == "account" %>
+                <% if transaction.merchant&.present? %>
+                  <span class="truncate"><%= transaction.merchant.name %></span>
+                <% end %>
+              <% else %>
+                <% if transaction.merchant&.present? %>
+                  <span class="hidden lg:inline"><%= transaction.merchant.name %> • </span>
+                <% end %>
+                <span class="hidden lg:inline"><%= entry.account.name %></span>
+                <span class="lg:hidden truncate"><%= transaction.merchant&.name || entry.account.name %></span>
+              <% end %>
             <% end %>
           </div>
         </div>
@@ -105,11 +115,13 @@
         <% end %>
       </div>
 
-      <div class="hidden lg:flex min-w-0 items-center col-span-1">
-        <span class="truncate text-secondary text-xs"><%= entry.account.name %></span>
-      </div>
+      <% if view_ctx == "global" %>
+        <div class="hidden lg:flex min-w-0 items-center col-span-1">
+          <span class="truncate text-secondary text-xs"><%= entry.account.name %></span>
+        </div>
+      <% end %>
 
-      <div class="hidden lg:flex min-w-0 col-span-3 px-2">
+      <div class="hidden lg:flex min-w-0 <%= view_ctx == "global" ? "col-span-3" : "col-span-4" %> px-2">
         <% if entry.notes.present? %>
           <span class="whitespace-pre-wrap break-words text-xs text-secondary privacy-sensitive" title="<%= entry.notes %>"><%= entry.notes %></span>
         <% else %>
@@ -117,7 +129,7 @@
         <% end %>
       </div>
 
-      <div class="shrink-0 col-span-4 lg:col-span-2 ml-auto flex items-center justify-end gap-2 <%= "opacity-50" if entry.excluded %>">
+      <div class="shrink-0 col-span-4 <%= view_ctx == "global" ? "lg:col-span-2" : "lg:col-span-2" %> ml-auto flex items-center justify-end gap-2 <%= "opacity-50" if entry.excluded %>">
         <% if entry.protected_from_sync? && !entry.excluded? %>
           <%= link_to entry_path(entry), data: { turbo_frame: "drawer", turbo_prefetch: false }, class: "invisible group-hover:visible transition-opacity", title: t("entries.protection.tooltip") do %>
             <%= icon "lock", size: "sm", class: "text-secondary" %>

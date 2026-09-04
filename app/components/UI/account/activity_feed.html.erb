@@ -141,7 +141,7 @@
               <p><%= t("transactions.list.transaction") %></p>
             </div>
             <p class="col-span-2 md:block hidden"><%= t("transactions.form.category_label") %></p>
-            <p class="col-span-3 hidden lg:block"><%= t("transactions.show.notes") %></p>
+            <p class="col-span-4 hidden lg:block"><%= t("transactions.show.notes") %></p>
             <p class="col-span-4 lg:col-span-2 ml-auto justify-self-end"><%= t("transactions.show.amount") %></p>
           </div>
         <% else %>
@@ -164,7 +164,11 @@
           <% if compact? && !group_by_date %>
             <div class="bg-container shadow-border-xs rounded-lg divide-y divide-primary/5">
               <% activity_dates.flat_map(&:entries).each do |entry| %>
-                <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: entry.split_child? && Current.user.show_split_grouped? %>
+                <% if entry.entryable_type == "Transaction" %>
+                  <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: entry.split_child? && Current.user.show_split_grouped? %>
+                <% else %>
+                  <%= render entry, view_ctx: "account" %>
+                <% end %>
               <% end %>
             </div>
           <% else %>

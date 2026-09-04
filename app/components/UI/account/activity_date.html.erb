@@ -45,16 +45,28 @@
             <div class="split-group">
               <%= render "transactions/split_parent_row", entry: item.parent %>
               <% item.children.each do |child_entry| %>
-                <%= render "transactions/compact_transaction", entry: child_entry, view_ctx: "account", in_split_group: true %>
+                <% if child_entry.entryable_type == "Transaction" %>
+                  <%= render "transactions/compact_transaction", entry: child_entry, view_ctx: "account", in_split_group: true %>
+                <% else %>
+                  <%= render child_entry, view_ctx: "account" %>
+                <% end %>
               <% end %>
             </div>
           <% else %>
-            <%= render "transactions/compact_transaction", entry: item, view_ctx: "account", in_split_group: false %>
+            <% if item.entryable_type == "Transaction" %>
+              <%= render "transactions/compact_transaction", entry: item, view_ctx: "account", in_split_group: false %>
+            <% else %>
+              <%= render item, view_ctx: "account" %>
+            <% end %>
           <% end %>
         <% end %>
       <% else %>
         <% entries.each do |entry| %>
-          <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: false %>
+          <% if entry.entryable_type == "Transaction" %>
+            <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: false %>
+          <% else %>
+            <%= render entry, view_ctx: "account" %>
+          <% end %>
         <% end %>
       <% end %>
     <% else %>
