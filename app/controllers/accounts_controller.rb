@@ -82,14 +82,27 @@ class AccountsController < ApplicationController
       return render_statement_tab_frame if statement_tab_frame_request?
     end
 
-    per_page = safe_per_page(stored_per_page_default)
-    store_per_page!(per_page) if params[:per_page].present?
+    effective_default = if Current.user.preview_features_enabled? && Current.user.transactions_per_page.present?
+      Current.user.transactions_per_page
+    else
+      stored_per_page_default
+    end
+    per_page = safe_per_page(effective_default)
+    if params[:per_page].present?
+      store_per_page!(per_page)
+      if Current.user.preview_features_enabled?
+        Current.user.update_transaction_preferences("transactions_per_page" => per_page) rescue nil
+      end
+    end
 
     @pagy, @entries = pagy(
       entries,
       limit: per_page,
       params: request.query_parameters.except("tab").merge("tab" => "activity")
     )
+
+    @compact_view = Current.user.preview_features_enabled? && Current.user.transactions_compact?
+    @group_by_date = Current.user.transactions_group_by_date?
 
     # Preload transfer associations only for Transaction entries
     txn_entryables = @entries.filter_map { |e| e.entryable if e.entryable_type == "Transaction" }

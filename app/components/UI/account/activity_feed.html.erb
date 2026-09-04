@@ -129,29 +129,56 @@
           <%= render "entries/selection_bar" %>
         </div>
 
-        <div class="grid bg-container-inset rounded-xl grid-cols-12 items-center uppercase text-xs font-medium text-secondary px-5 py-3 mb-4">
-          <div class="pl-0.5 col-span-8 flex items-center gap-4">
-            <%= check_box_tag "selection_entry",
-                              class: "checkbox checkbox--light hidden lg:block",
-                              data: {
-                                action: "bulk-select#togglePageSelection",
-                                checkbox_toggle_target: "selectionEntry"
-                              } %>
-            <%= tag.p t("accounts.show.activity.date") %>
+        <% if compact? %>
+          <div class="grid-cols-12 bg-container-inset rounded-xl px-3 py-2 text-[11px] uppercase font-medium text-secondary items-center mb-2 grid">
+            <div class="pl-0.5 col-span-4 flex items-center gap-2">
+              <%= check_box_tag "selection_entry",
+                                class: "checkbox checkbox--light hidden lg:block",
+                                data: {
+                                  action: "bulk-select#togglePageSelection",
+                                  checkbox_toggle_target: "selectionEntry"
+                                } %>
+              <p><%= t("transactions.list.transaction") %></p>
+            </div>
+            <p class="col-span-2 md:block hidden"><%= t("transactions.form.category_label") %></p>
+            <p class="col-span-3 hidden lg:block"><%= t("transactions.show.notes") %></p>
+            <p class="col-span-4 lg:col-span-2 ml-auto justify-self-end"><%= t("transactions.show.amount") %></p>
           </div>
+        <% else %>
+          <div class="grid bg-container-inset rounded-xl grid-cols-12 items-center uppercase text-xs font-medium text-secondary px-5 py-3 mb-4">
+            <div class="pl-0.5 col-span-8 flex items-center gap-4">
+              <%= check_box_tag "selection_entry",
+                                class: "checkbox checkbox--light hidden lg:block",
+                                data: {
+                                  action: "bulk-select#togglePageSelection",
+                                  checkbox_toggle_target: "selectionEntry"
+                                } %>
+              <%= tag.p t("accounts.show.activity.date") %>
+            </div>
 
-          <%= tag.p t("accounts.show.activity.amount"), class: "col-span-4 justify-self-end" %>
-        </div>
+            <%= tag.p t("accounts.show.activity.amount"), class: "col-span-4 justify-self-end" %>
+          </div>
+        <% end %>
 
         <div>
-          <div class="space-y-4">
-            <% activity_dates.each do |activity_date_data| %>
-              <%= render UI::Account::ActivityDate.new(
-                    account: account,
-                    data: activity_date_data
-                  ) %>
-            <% end %>
-          </div>
+          <% if compact? && !group_by_date %>
+            <div class="bg-container shadow-border-xs rounded-lg divide-y divide-primary/5">
+              <% activity_dates.flat_map(&:entries).each do |entry| %>
+                <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: entry.split_child? && Current.user.show_split_grouped? %>
+              <% end %>
+            </div>
+          <% else %>
+            <div class="space-y-4">
+              <% activity_dates.each do |activity_date_data| %>
+                <%= render UI::Account::ActivityDate.new(
+                      account: account,
+                      data: activity_date_data,
+                      compact: compact?,
+                      group_by_date: group_by_date
+                    ) %>
+              <% end %>
+            </div>
+          <% end %>
 
           <div class="p-4 bg-container rounded-bl-lg rounded-br-lg">
             <%= render "shared/pagination", pagy: pagy %>
