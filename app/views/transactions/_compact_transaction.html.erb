@@ -1,11 +1,12 @@
-<%# locals: (entry:, balance_trend: nil, view_ctx: "global", in_split_group: false) %>
+<%# locals: (entry:, balance_trend: nil, view_ctx: "global", in_split_group: false, running_balance: nil) %>
 <% transaction = entry.entryable %>
-<% transaction_security_logo_url = transaction.activity_security&.display_logo_url %>
+<% transaction_security_logo_url = transaction.activity_security&.display_logo_url rescue nil %>
+<% has_running_balance = defined?(running_balance) && running_balance.present? %>
 
 <%= turbo_frame_tag dom_id(entry) do %>
   <%= turbo_frame_tag dom_id(transaction) do %>
     <div class="group flex lg:grid lg:grid-cols-12 items-center text-primary text-xs font-medium py-2 px-3 <%= "pl-6 lg:pl-8" if in_split_group %> border-b border-primary/5 last:border-b-0">
-      <div class="pr-2 lg:pr-3 flex items-center gap-2 lg:gap-3 col-span-4 min-w-0">
+      <div class="pr-2 lg:pr-3 flex items-center gap-2 lg:gap-3 <%= has_running_balance && view_ctx == "account" ? "col-span-3" : "col-span-4" %> min-w-0">
         <%= check_box_tag dom_id(entry, "selection"),
             disabled: transaction.transfer.present?,
             class: "checkbox checkbox--light hidden lg:block",
@@ -121,13 +122,19 @@
         </div>
       <% end %>
 
-      <div class="hidden lg:flex min-w-0 <%= view_ctx == "global" ? "col-span-3" : "col-span-4" %> px-2">
+      <div class="hidden lg:flex min-w-0 <%= has_running_balance && view_ctx == "account" ? "col-span-3" : (view_ctx == "global" ? "col-span-3" : "col-span-4") %> px-2">
         <% if entry.notes.present? %>
           <span class="whitespace-pre-wrap break-words text-xs text-secondary privacy-sensitive" title="<%= entry.notes %>"><%= entry.notes %></span>
         <% else %>
           <span class="text-secondary/40 text-xs">—</span>
         <% end %>
       </div>
+
+      <% if has_running_balance && view_ctx == "account" %>
+        <div class="hidden lg:flex min-w-0 col-span-2 justify-end px-2">
+          <span class="privacy-sensitive text-xs font-medium text-primary truncate" title="<%= format_money(running_balance) %>"><%= format_money(running_balance) %></span>
+        </div>
+      <% end %>
 
       <div class="shrink-0 col-span-4 <%= view_ctx == "global" ? "lg:col-span-2" : "lg:col-span-2" %> ml-auto flex items-center justify-end gap-2 <%= "opacity-50" if entry.excluded %>">
         <% if entry.protected_from_sync? && !entry.excluded? %>

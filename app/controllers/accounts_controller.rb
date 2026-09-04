@@ -75,8 +75,20 @@ class AccountsController < ApplicationController
     @chart_view = params[:chart_view] || "balance"
     @tab = params[:tab]
     @accessible_account_ids = Current.user.accessible_accounts.pluck(:id).to_set
-    @q = params.fetch(:q, {}).permit(:search, status: [])
-    entries = @account.entries.excluding_split_parents.search(@q).reverse_chronological.includes(:entryable)
+    @q = params.fetch(:q, {}).permit(:search, :start_date, :end_date, :amount, :amount_operator, status: [], categories: [], merchants: [], tags: [], types: [])
+    # Base entries for the account
+    entries = @account.entries.excluding_split_parents
+    # Search / date / amount / status via EntrySearch
+    entries = EntrySearch.apply_search_filter(entries, @q[:search])
+    entries = EntrySearch.apply_date_filters(entries, @q[:start_date], @q[:end_date])
+    entries = EntrySearch.apply_amount_filter(entries, @q[:amount], @q[:amount_operator])
+    entries = EntrySearch.apply_status_filter(entries, @q[:status])
+    # Category / merchant / tag / type filters use Transaction::Search scoped to this account
+    if @q["categories"].present? || @q["merchants"].present? || @q["tags"].present? || @q["types"].present?
+      txn_entry_ids = Transaction::Search.new(Current.family, filters: @q.slice("categories", "merchants", "tags", "types").to_h, accessible_account_ids: [ @account.id ]).transactions_scope.pluck("entries.id")
+      entries = entries.where(id: txn_entry_ids)
+    end
+    entries = entries.reverse_chronological.includes(:entryable)
     if statement_tab_active?
       build_statement_tab_data
       return render_statement_tab_frame if statement_tab_frame_request?
@@ -157,6 +169,22 @@ class AccountsController < ApplicationController
     end
 
     @activity_feed_data = Account::ActivityFeedData.new(@account, @entries, split_parents: @split_parents)
+
+    # Running balance per entry for flat compact view only (when not grouped by date)
+    @running_balances = {}
+    if @compact_view && !@group_by_date && @entries.any?
+      # Compute cumulative sum in chronological order for the account (all entries), then pick for current page
+      all_ids_amounts = @account.entries.excluding_split_parents.order(:date, :created_at, :id).pluck(:id, :amount)
+      cumulative = 0.to_d
+      running_map = {}
+      all_ids_amounts.each do |eid, amt|
+        cumulative += amt.to_d
+        running_map[eid] = cumulative
+      end
+      @entries.each do |e|
+        @running_balances[e.id] = Money.new(running_map[e.id] || 0, @account.currency)
+      end
+    end
   end
 
   def sync

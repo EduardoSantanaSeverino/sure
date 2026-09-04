@@ -1,12 +1,13 @@
 class UI::Account::ActivityFeed < ApplicationComponent
-  attr_reader :feed_data, :pagy, :search, :compact, :group_by_date
+  attr_reader :feed_data, :pagy, :search, :compact, :group_by_date, :running_balances
 
-  def initialize(feed_data:, pagy:, search: nil, compact: false, group_by_date: true)
+  def initialize(feed_data:, pagy:, search: nil, compact: false, group_by_date: true, running_balances: {})
     @feed_data = feed_data
     @pagy = pagy
     @search = search
     @compact = compact
     @group_by_date = group_by_date
+    @running_balances = running_balances || {}
   end
 
   def compact?

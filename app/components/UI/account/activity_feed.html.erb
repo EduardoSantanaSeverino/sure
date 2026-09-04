@@ -64,6 +64,7 @@
                             value: search,
                             class: "form-field__input placeholder:text-sm placeholder:text-secondary",
                             "data-auto-submit-form-target": "auto" %>
+              <%= hidden_field_tag :tab, "activity" %>
             </div>
           </div>
 
@@ -77,29 +78,50 @@
             ) %>
 
             <% popover.with_custom_content do %>
-              <div class="p-3 space-y-3 min-w-[160px]">
-                <p class="text-xs font-medium text-secondary uppercase"><%= t("accounts.show.activity.status") %></p>
-                <div class="flex items-center gap-3">
-                  <%= check_box_tag "q[status][]",
-                                    "confirmed",
-                                    params.dig(:q, :status)&.include?("confirmed"),
-                                    id: "q_status_confirmed",
-                                    class: "checkbox checkbox--light",
-                                    form: "entries-search",
-                                    onchange: "document.getElementById('entries-search').requestSubmit()" %>
-                  <%= label_tag "q_status_confirmed", t("accounts.show.activity.confirmed"), class: "text-sm text-primary" %>
+              <%= render DS::Tabs.new(
+                variant: :unstyled,
+                active_tab: transaction_search_filters.reject { |f| f[:key] == "account_filter" }.first[:key],
+                active_btn_classes: "bg-surface text-primary",
+                inactive_btn_classes: "text-secondary hover:bg-container-inset"
+              ) do |tabs| %>
+                <div class="flex flex-col md:flex-row h-[50vh] lg:max-h-auto z-10 md:h-80 w-full md:w-[540px] top-12 right-0 overflow-hidden">
+                  <%= tabs.with_nav(classes: "shrink-0 flex w-full md:w-44 flex-row md:flex-col items-start p-3 text-sm font-medium text-secondary border-b md:border-b-0 md:border-r border-secondary overflow-x-auto md:overflow-x-visible") do |nav| %>
+                    <% transaction_search_filters.reject { |f| f[:key] == "account_filter" }.each do |filter| %>
+                      <%= nav.with_btn(id: filter[:key], label: filter[:label], classes: "w-full px-3 py-2 flex gap-2 items-center rounded-md") do %>
+                        <%= helpers.icon(filter[:icon]) %>
+                        <%= tag.span(filter[:label], class: "text-sm font-medium") %>
+                      <% end %>
+                    <% end %>
+                  <% end %>
+
+                  <div class="flex flex-col grow overflow-y-auto">
+                    <div class="grow p-3 border-b border-secondary overflow-y-auto">
+                      <% transaction_search_filters.reject { |f| f[:key] == "account_filter" }.each do |filter| %>
+                        <%= tabs.with_panel(tab_id: filter[:key]) do %>
+                          <%= render partial: get_transaction_search_filter_partial_path(filter), locals: { form: form } %>
+                        <% end %>
+                      <% end %>
+                    </div>
+
+                    <div class="flex justify-between items-center gap-2 bg-container p-3 shrink-0">
+                      <div>
+                        <% if @q.present? %>
+                          <%= render DS::Link.new(
+                            text: t("transactions.search.menu.clear_filters"),
+                            variant: "ghost",
+                            href: account_path(@account, tab: "activity"),
+                          ) %>
+                        <% end %>
+                      </div>
+
+                      <div class="flex gap-2">
+                        <%= render DS::Button.new(text: t("transactions.search.menu.cancel"), type: "button", variant: "ghost", data: { action: "DS--popover#close" }) %>
+                        <%= render DS::Button.new(text: t("transactions.search.menu.apply"), type: :submit) %>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div class="flex items-center gap-3">
-                  <%= check_box_tag "q[status][]",
-                                    "pending",
-                                    params.dig(:q, :status)&.include?("pending"),
-                                    id: "q_status_pending",
-                                    class: "checkbox checkbox--light",
-                                    form: "entries-search",
-                                    onchange: "document.getElementById('entries-search').requestSubmit()" %>
-                  <%= label_tag "q_status_pending", t("accounts.show.activity.pending"), class: "text-sm text-primary" %>
-                </div>
-              </div>
+              <% end %>
             <% end %>
           <% end %>
       <% end %>
@@ -130,20 +152,38 @@
         </div>
 
         <% if compact? %>
-          <div class="grid-cols-12 bg-container-inset rounded-xl px-3 py-2 text-[11px] uppercase font-medium text-secondary items-center mb-2 grid">
-            <div class="pl-0.5 col-span-4 flex items-center gap-2">
-              <%= check_box_tag "selection_entry",
-                                class: "checkbox checkbox--light hidden lg:block",
-                                data: {
-                                  action: "bulk-select#togglePageSelection",
-                                  checkbox_toggle_target: "selectionEntry"
-                                } %>
-              <p><%= t("transactions.list.transaction") %></p>
+          <% if !group_by_date %>
+            <div class="grid-cols-12 bg-container-inset rounded-xl px-2 py-2 text-[11px] uppercase font-medium text-secondary items-center mb-2 grid">
+              <div class="pl-0.5 col-span-3 flex items-center gap-2">
+                <%= check_box_tag "selection_entry",
+                                  class: "checkbox checkbox--light hidden lg:block",
+                                  data: {
+                                    action: "bulk-select#togglePageSelection",
+                                    checkbox_toggle_target: "selectionEntry"
+                                  } %>
+                <p><%= t("transactions.list.transaction") %></p>
+              </div>
+              <p class="col-span-2 md:block hidden"><%= t("transactions.form.category_label") %></p>
+              <p class="col-span-3 hidden lg:block"><%= t("transactions.show.notes") %></p>
+              <p class="col-span-2 hidden lg:block text-right"><%= t("accounts.show.activity.balance") %></p>
+              <p class="col-span-2 ml-auto justify-self-end text-right"><%= t("transactions.show.amount") %></p>
             </div>
-            <p class="col-span-2 md:block hidden"><%= t("transactions.form.category_label") %></p>
-            <p class="col-span-4 hidden lg:block"><%= t("transactions.show.notes") %></p>
-            <p class="col-span-4 lg:col-span-2 ml-auto justify-self-end"><%= t("transactions.show.amount") %></p>
-          </div>
+          <% else %>
+            <div class="grid-cols-12 bg-container-inset rounded-xl px-3 py-2 text-[11px] uppercase font-medium text-secondary items-center mb-2 grid">
+              <div class="pl-0.5 col-span-4 flex items-center gap-2">
+                <%= check_box_tag "selection_entry",
+                                  class: "checkbox checkbox--light hidden lg:block",
+                                  data: {
+                                    action: "bulk-select#togglePageSelection",
+                                    checkbox_toggle_target: "selectionEntry"
+                                  } %>
+                <p><%= t("transactions.list.transaction") %></p>
+              </div>
+              <p class="col-span-2 md:block hidden"><%= t("transactions.form.category_label") %></p>
+              <p class="col-span-4 hidden lg:block"><%= t("transactions.show.notes") %></p>
+              <p class="col-span-4 lg:col-span-2 ml-auto justify-self-end"><%= t("transactions.show.amount") %></p>
+            </div>
+          <% end %>
         <% else %>
           <div class="grid bg-container-inset rounded-xl grid-cols-12 items-center uppercase text-xs font-medium text-secondary px-5 py-3 mb-4">
             <div class="pl-0.5 col-span-8 flex items-center gap-4">
@@ -165,7 +205,7 @@
             <div class="bg-container shadow-border-xs rounded-lg divide-y divide-primary/5">
               <% activity_dates.flat_map(&:entries).each do |entry| %>
                 <% if entry.entryable_type == "Transaction" %>
-                  <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: entry.split_child? && Current.user.show_split_grouped? %>
+                  <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: entry.split_child? && Current.user.show_split_grouped?, running_balance: running_balances[entry.id] %>
                 <% else %>
                   <%= render entry, view_ctx: "account" %>
                 <% end %>
