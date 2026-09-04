@@ -6,7 +6,10 @@
 <%= turbo_frame_tag dom_id(entry) do %>
   <%= turbo_frame_tag dom_id(transaction) do %>
     <div class="group flex lg:grid lg:grid-cols-12 items-center text-primary text-xs font-medium py-2 px-3 <%= "pl-6 lg:pl-8" if in_split_group %> border-b border-primary/5 last:border-b-0">
-      <div class="pr-2 lg:pr-3 flex items-center gap-2 lg:gap-3 <%= has_running_balance && view_ctx == "account" ? "col-span-3" : "col-span-4" %> min-w-0">
+      <% if has_running_balance && view_ctx == "account" %>
+        <div class="hidden lg:flex col-span-2 text-secondary text-xs truncate pr-2"><%= I18n.l(entry.date, format: :short) rescue entry.date.to_s %></div>
+      <% end %>
+      <div class="pr-2 lg:pr-3 flex items-center gap-2 lg:gap-3 <%= has_running_balance && view_ctx == "account" ? "col-span-2" : "col-span-4" %> min-w-0">
         <%= check_box_tag dom_id(entry, "selection"),
             disabled: transaction.transfer.present?,
             class: "checkbox checkbox--light hidden lg:block",
@@ -122,7 +125,7 @@
         </div>
       <% end %>
 
-      <div class="hidden lg:flex min-w-0 <%= has_running_balance && view_ctx == "account" ? "col-span-3" : (view_ctx == "global" ? "col-span-3" : "col-span-4") %> px-2">
+      <div class="hidden lg:flex min-w-0 <%= has_running_balance && view_ctx == "account" ? "col-span-2" : (view_ctx == "global" ? "col-span-3" : "col-span-4") %> px-2">
         <% if entry.notes.present? %>
           <span class="whitespace-pre-wrap break-words text-xs text-secondary privacy-sensitive" title="<%= entry.notes %>"><%= entry.notes %></span>
         <% else %>

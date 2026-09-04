@@ -154,7 +154,8 @@
         <% if compact? %>
           <% if !group_by_date %>
             <div class="grid-cols-12 bg-container-inset rounded-xl px-2 py-2 text-[11px] uppercase font-medium text-secondary items-center mb-2 grid">
-              <div class="pl-0.5 col-span-3 flex items-center gap-2">
+              <p class="col-span-2 hidden lg:block"><%= t("transactions.show.date_label") %></p>
+              <div class="pl-0.5 col-span-2 flex items-center gap-2">
                 <%= check_box_tag "selection_entry",
                                   class: "checkbox checkbox--light hidden lg:block",
                                   data: {
@@ -164,7 +165,7 @@
                 <p><%= t("transactions.list.transaction") %></p>
               </div>
               <p class="col-span-2 md:block hidden"><%= t("transactions.form.category_label") %></p>
-              <p class="col-span-3 hidden lg:block"><%= t("transactions.show.notes") %></p>
+              <p class="col-span-2 hidden lg:block"><%= t("transactions.show.notes") %></p>
               <p class="col-span-2 hidden lg:block text-right"><%= t("accounts.show.activity.balance") %></p>
               <p class="col-span-2 ml-auto justify-self-end text-right"><%= t("transactions.show.amount") %></p>
             </div>
