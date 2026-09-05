@@ -38,10 +38,10 @@
         </div>
       </div>
 
-      <%# NOTES flex 2 %>
+      <%# NOTES flex 2 — single line truncate %>
       <div class="hidden lg:flex min-w-0 flex-[2] px-2">
         <% if entry.notes.present? %>
-          <span class="whitespace-pre-wrap break-words text-sm text-secondary privacy-sensitive" title="<%= entry.notes %>"><%= entry.notes %></span>
+          <span class="truncate block text-sm text-secondary privacy-sensitive" title="<%= entry.notes %>"><%= entry.notes %></span>
         <% else %>
           <span class="text-secondary/40 text-sm">—</span>
         <% end %>
