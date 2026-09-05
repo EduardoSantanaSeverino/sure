@@ -24,12 +24,8 @@
         <div class="hidden lg:flex w-[110px] shrink-0 text-secondary text-sm truncate pr-2"><%= format_date(entry.date) %></div>
       <% end %>
 
-      <%# TRANSACTION flex 2 %>
+      <%# TRANSACTION flex 2 — account/transfer same as normal, both global and account, mobile same as normal %>
       <div class="flex items-center gap-2 lg:gap-3 flex-[2] min-w-0 pr-2">
-        <div class="flex md:hidden items-center gap-1 shrink-0">
-          <%= render "transactions/transaction_category", transaction: transaction, variant: "mobile", in_split_group: in_split_group %>
-        </div>
-
         <div class="min-w-0 flex-1 <%= "opacity-50 text-secondary" if entry.excluded %>">
           <div class="flex items-center gap-1 min-w-0">
             <div class="truncate">
@@ -69,18 +65,43 @@
             </div>
           </div>
 
-          <div class="text-secondary text-xs font-normal truncate">
+          <div class="text-secondary text-xs font-normal">
             <% if transaction.transfer? %>
-              <span><%= transaction.loan_payment? ? t("transactions.show.loan_payment") : t("transactions.show.transfer") %></span>
+              <span class="text-secondary">
+                <%= transaction.loan_payment? ? t("transactions.show.loan_payment") : t("transactions.show.transfer") %> •
+                <% if transaction.transfer.present? %>
+                  <% counterpart = transaction.transfer_as_outflow.present? ? transaction.transfer.to_account : transaction.transfer.from_account %>
+                  <% if counterpart.present? && @accessible_account_ids&.include?(counterpart.id) %>
+                    <% if transaction.transfer_as_outflow.present? %>
+                      <%= link_to entry.account.name, account_path(entry.account, tab: "transactions"), data: { turbo_frame: "_top" }, class: "hover:underline" %> → <%= link_to counterpart.name, account_path(counterpart, tab: "transactions"), data: { turbo_frame: "_top" }, class: "hover:underline" %>
+                    <% else %>
+                      <%= link_to entry.account.name, account_path(entry.account, tab: "transactions"), data: { turbo_frame: "_top" }, class: "hover:underline" %> ← <%= link_to counterpart.name, account_path(counterpart, tab: "transactions"), data: { turbo_frame: "_top" }, class: "hover:underline" %>
+                    <% end %>
+                  <% else %>
+                    <%= link_to entry.account.name, account_path(entry.account, tab: "transactions"), data: { turbo_frame: "_top" }, class: "hover:underline" %>
+                  <% end %>
+                <% else %>
+                  <%= link_to entry.account.name, account_path(entry.account, tab: "transactions"), data: { turbo_frame: "_top" }, class: "hover:underline" %>
+                <% end %>
+              </span>
             <% else %>
               <% if transaction.merchant&.present? %>
-                <span class="truncate"><%= transaction.merchant.name %></span>
+                <span class="hidden lg:inline truncate"><%= transaction.merchant.name %> • </span>
               <% end %>
+              <span class="text-secondary hidden lg:inline">
+                <%= link_to entry.account.name,
+                    account_path(entry.account, tab: "transactions"),
+                    data: { turbo_frame: "_top" },
+                    class: "hover:underline" %>
+              </span>
+              <div class="flex min-w-0 items-center gap-1">
+                <%= render "categories/category_name_mobile", transaction: transaction %>
+                <% if transaction.merchant&.present? %>
+                  <span class="lg:hidden min-w-0 truncate">• <%= transaction.merchant.name %></span>
+                <% end %>
+              </div>
             <% end %>
           </div>
-          <% if view_ctx == "global" %>
-            <div class="text-secondary text-xs font-normal truncate"><%= entry.account.name %></div>
-          <% end %>
         </div>
       </div>
 

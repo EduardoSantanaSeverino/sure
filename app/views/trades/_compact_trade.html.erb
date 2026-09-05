@@ -23,7 +23,7 @@
         <div class="hidden lg:flex w-[110px] shrink-0 text-secondary text-sm truncate pr-2"><%= format_date(entry.date) %></div>
       <% end %>
 
-      <%# TRANSACTION flex 2 %>
+      <%# TRANSACTION flex 2 — account link same as normal, both global and account %>
       <div class="flex items-center gap-2 lg:gap-3 flex-[2] min-w-0 pr-2">
         <div class="min-w-0 flex-1">
           <div class="truncate">
@@ -32,9 +32,9 @@
                         data: { turbo_frame: "drawer", turbo_prefetch: false },
                         class: "hover:underline truncate" %>
           </div>
-          <% if view_ctx == "global" %>
-            <div class="text-secondary text-xs font-normal truncate"><%= entry.account.name %></div>
-          <% end %>
+          <div class="text-secondary text-xs font-normal truncate">
+            <%= link_to entry.account.name, account_path(entry.account, tab: "transactions"), data: { turbo_frame: "_top" }, class: "hover:underline" %>
+          </div>
         </div>
       </div>
 
