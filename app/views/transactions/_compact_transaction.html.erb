@@ -1,15 +1,14 @@
 <%# locals: (entry:, balance_trend: nil, view_ctx: "global", in_split_group: false, running_balance: nil) %>
 <% transaction = entry.entryable %>
-<% transaction_security_logo_url = transaction.activity_security&.display_logo_url rescue nil %>
 <% has_running_balance = defined?(running_balance) && running_balance.present? %>
 
 <%= turbo_frame_tag dom_id(entry) do %>
   <%= turbo_frame_tag dom_id(transaction) do %>
     <div class="group flex lg:grid lg:grid-cols-12 items-center text-primary text-sm font-medium py-2 px-3 <%= "pl-6 lg:pl-8" if in_split_group %> border-b border-primary/5 last:border-b-0">
-      <% if has_running_balance && view_ctx == "account" %>
+      <% if has_running_balance %>
         <div class="hidden lg:flex col-span-2 text-secondary text-sm truncate pr-2"><%= entry.date.strftime("%Y-%m-%d") %></div>
       <% end %>
-      <div class="pr-2 lg:pr-3 flex items-center gap-2 lg:gap-3 <%= has_running_balance && view_ctx == "account" ? "col-span-2" : "col-span-4" %> min-w-0">
+      <div class="pr-2 lg:pr-3 flex items-center gap-2 lg:gap-3 <%= has_running_balance ? "col-span-2" : "col-span-4" %> min-w-0">
         <%= check_box_tag dom_id(entry, "selection"),
             disabled: transaction.transfer.present?,
             class: "checkbox checkbox--light hidden lg:block",
@@ -23,32 +22,6 @@
 
         <div class="flex md:hidden items-center gap-1 shrink-0">
           <%= render "transactions/transaction_category", transaction: transaction, variant: "mobile", in_split_group: in_split_group %>
-        </div>
-
-        <div class="hidden lg:flex shrink-0">
-          <% if transaction.transfer? %>
-            <%= render DS::FilledIcon.new(
-              icon: "arrow-right-left",
-              hex_color: Category::TRANSFER_COLOR,
-              size: "sm",
-              rounded: true
-            ) %>
-          <% elsif transaction_security_logo_url.present? %>
-            <%= image_tag Setting.transform_brand_fetch_url(transaction_security_logo_url),
-                class: "w-7 h-7 rounded-full border border-secondary",
-                loading: "lazy" %>
-          <% elsif transaction.merchant&.logo_url.present? %>
-            <%= image_tag Setting.transform_brand_fetch_url(transaction.merchant.logo_url),
-                class: "w-7 h-7 rounded-full border border-secondary",
-                loading: "lazy" %>
-          <% else %>
-            <%= render DS::FilledIcon.new(
-                variant: :text,
-                text: entry.name,
-                size: "sm",
-                rounded: true
-            ) %>
-          <% end %>
         </div>
 
         <div class="min-w-0 flex-1 <%= "opacity-50 text-secondary" if entry.excluded %>">
@@ -92,26 +65,22 @@
 
           <div class="text-secondary text-xs font-normal truncate">
             <% if transaction.transfer? %>
-              <% if view_ctx == "account" %>
-                <span><%= transaction.loan_payment? ? t("transactions.show.loan_payment") : t("transactions.show.transfer") %></span>
-              <% else %>
-                <span><%= transaction.loan_payment? ? t("transactions.show.loan_payment") : t("transactions.show.transfer") %> • <%= entry.account.name %></span>
-              <% end %>
+              <span><%= transaction.loan_payment? ? t("transactions.show.loan_payment") : t("transactions.show.transfer") %></span>
             <% else %>
-              <% if view_ctx == "account" %>
-                <% if transaction.merchant&.present? %>
-                  <span class="truncate"><%= transaction.merchant.name %></span>
-                <% end %>
-              <% else %>
-                <% if transaction.merchant&.present? %>
-                  <span class="hidden lg:inline"><%= transaction.merchant.name %> • </span>
-                <% end %>
-                <span class="hidden lg:inline"><%= entry.account.name %></span>
-                <span class="lg:hidden truncate"><%= transaction.merchant&.name || entry.account.name %></span>
+              <% if transaction.merchant&.present? %>
+                <span class="truncate"><%= transaction.merchant.name %></span>
               <% end %>
             <% end %>
           </div>
         </div>
+      </div>
+
+      <div class="hidden lg:flex min-w-0 <%= has_running_balance ? "col-span-2" : "col-span-4" %> px-2">
+        <% if entry.notes.present? %>
+          <span class="whitespace-pre-wrap break-words text-sm text-secondary privacy-sensitive" title="<%= entry.notes %>"><%= entry.notes %></span>
+        <% else %>
+          <span class="text-secondary/40 text-sm">—</span>
+        <% end %>
       </div>
 
       <div class="hidden md:flex min-w-0 items-center gap-1 col-span-2">
@@ -122,27 +91,7 @@
         <% end %>
       </div>
 
-      <% if view_ctx == "global" %>
-        <div class="hidden lg:flex min-w-0 items-center col-span-1">
-          <span class="truncate text-secondary text-xs"><%= entry.account.name %></span>
-        </div>
-      <% end %>
-
-      <div class="hidden lg:flex min-w-0 <%= has_running_balance && view_ctx == "account" ? "col-span-2" : (view_ctx == "global" ? "col-span-3" : "col-span-4") %> px-2">
-        <% if entry.notes.present? %>
-          <span class="whitespace-pre-wrap break-words text-sm text-secondary privacy-sensitive" title="<%= entry.notes %>"><%= entry.notes %></span>
-        <% else %>
-          <span class="text-secondary/40 text-sm">—</span>
-        <% end %>
-      </div>
-
-      <% if has_running_balance && view_ctx == "account" %>
-        <div class="hidden lg:flex min-w-0 col-span-2 justify-end px-2">
-          <span class="privacy-sensitive text-sm font-medium text-primary truncate" title="<%= format_money(running_balance) %>"><%= format_money(running_balance) %></span>
-        </div>
-      <% end %>
-
-      <div class="shrink-0 col-span-4 <%= view_ctx == "global" ? "lg:col-span-2" : "lg:col-span-2" %> ml-auto flex items-center justify-end gap-2 <%= "opacity-50" if entry.excluded %>">
+      <div class="shrink-0 col-span-4 lg:col-span-2 ml-auto flex items-center justify-end gap-2 <%= "opacity-50" if entry.excluded %>">
         <% if entry.protected_from_sync? && !entry.excluded? %>
           <%= link_to entry_path(entry), data: { turbo_frame: "drawer", turbo_prefetch: false }, class: "invisible group-hover:visible transition-opacity", title: t("entries.protection.tooltip") do %>
             <%= icon "lock", size: "sm", class: "text-secondary" %>
@@ -152,6 +101,12 @@
             transaction.transfer? && view_ctx == "global" ? "+/- #{format_money(entry.amount_money.abs)}" : format_money(-entry.amount_money),
             class: ["privacy-sensitive text-sm font-medium", "text-green-600": entry.amount.negative?] %>
       </div>
+
+      <% if has_running_balance %>
+        <div class="hidden lg:flex min-w-0 col-span-2 justify-end px-2">
+          <span class="privacy-sensitive text-sm font-medium text-primary truncate" title="<%= format_money(running_balance) %>"><%= format_money(running_balance) %></span>
+        </div>
+      <% end %>
     </div>
   <% end %>
 <% end %>
