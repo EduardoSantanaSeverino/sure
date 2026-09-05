@@ -30,7 +30,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [amd64, arm64]
+        # Defaults to AMD64-only. To add ARM64, set the repository Actions
+        # variable UAT_DOCKER_PLATFORMS to ["amd64","arm64"].
+        platform: ${{ fromJSON(vars.UAT_DOCKER_PLATFORMS || '["amd64"]') }}
         include:
           - platform: amd64
             runs-on: ubuntu-24.04
@@ -147,6 +149,7 @@ jobs:
         env:
           TAGS: ${{ needs.build.outputs.tags }}
           DIGESTS_DIR: ${{ runner.temp }}/digests
+          PLATFORMS_JSON: ${{ vars.UAT_DOCKER_PLATFORMS || '["amd64"]' }}
         shell: bash -xeuo pipefail {0}
         run: |
           tag_args=()
@@ -156,7 +159,7 @@ jobs:
           done <<< "${TAGS}"
 
           image_args=()
-          for PLATFORM in amd64 arm64; do
+          for PLATFORM in $(jq -r '.[]' <<< "${PLATFORMS_JSON}"); do
             image_args+=("${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:$(<"${DIGESTS_DIR}/digest-${PLATFORM}")")
           done
 
