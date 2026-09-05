@@ -32,10 +32,12 @@ on:
     paths-ignore:
       - 'charts/**'
       - 'mobile/**'
+  schedule:
+    - cron: '30 1 * * *'
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: eduardosantanaseverino/sure
+  IMAGE_NAME: ${{ github.repository }}
 
 permissions:
   contents: write
@@ -44,8 +46,6 @@ permissions:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
-    with:
-      require_js_dependency_audit: false
 
   build:
     name: Build Docker image
@@ -93,9 +93,7 @@ jobs:
         shell: bash
         run: |
           BASE_CONFIG="type=sha,format=long"
-          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
-            BASE_CONFIG+=$'\n'"type=raw,value=stable"
-          elif [[ $GITHUB_EVENT_NAME == "schedule" ]]; then
+          if [[ $GITHUB_EVENT_NAME == "schedule" ]]; then
             BASE_CONFIG+=$'\n'"type=schedule,pattern=nightly"
             BASE_CONFIG+=$'\n'"type=schedule,pattern=nightly-{{date 'ddd'}}"
           elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
