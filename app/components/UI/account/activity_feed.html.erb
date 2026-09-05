@@ -207,6 +207,8 @@
               <% activity_dates.flat_map(&:entries).each do |entry| %>
                 <% if entry.entryable_type == "Transaction" %>
                   <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: entry.split_child? && Current.user.show_split_grouped?, running_balance: running_balances[entry.id] %>
+                <% elsif entry.entryable_type == "Trade" %>
+                  <%= render "trades/compact_trade", entry: entry, view_ctx: "account", in_split_group: false, running_balance: running_balances[entry.id] %>
                 <% else %>
                   <%= render entry, view_ctx: "account" %>
                 <% end %>
