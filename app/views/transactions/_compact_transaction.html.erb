@@ -4,14 +4,12 @@
 
 <%= turbo_frame_tag dom_id(entry) do %>
   <%= turbo_frame_tag dom_id(transaction) do %>
-    <div class="group flex lg:grid lg:grid-cols-12 items-center text-primary text-sm font-medium py-2 px-3 <%= "pl-6 lg:pl-8" if in_split_group %> border-b border-primary/5 last:border-b-0">
-      <% if has_running_balance %>
-        <div class="hidden lg:flex col-span-2 text-secondary text-sm truncate pr-2"><%= entry.date.strftime("%Y-%m-%d") %></div>
-      <% end %>
-      <div class="pr-2 lg:pr-3 flex items-center gap-2 lg:gap-3 <%= has_running_balance ? "col-span-2" : "col-span-4" %> min-w-0">
+    <div class="group flex items-center gap-2 lg:gap-3 text-primary text-sm font-medium py-2 px-3 <%= "pl-6 lg:pl-8" if in_split_group %> border-b border-primary/5 last:border-b-0">
+      <%# ☐ mint %>
+      <div class="hidden lg:flex w-8 shrink-0 justify-center">
         <%= check_box_tag dom_id(entry, "selection"),
             disabled: transaction.transfer.present?,
-            class: "checkbox checkbox--light hidden lg:block",
+            class: "checkbox checkbox--light",
             data: {
               id: entry.id,
               entry_type: entry.entryable_type,
@@ -19,7 +17,15 @@
               action: "bulk-select#toggleRowSelection",
               checkbox_toggle_target: "selectionEntry"
             } %>
+      </div>
 
+      <%# DATE mint — respects Settings date_format via format_date %>
+      <% if has_running_balance %>
+        <div class="hidden lg:flex w-[110px] shrink-0 text-secondary text-sm truncate pr-2"><%= format_date(entry.date) %></div>
+      <% end %>
+
+      <%# TRANSACTION flex 2 %>
+      <div class="flex items-center gap-2 lg:gap-3 flex-[2] min-w-0 pr-2">
         <div class="flex md:hidden items-center gap-1 shrink-0">
           <%= render "transactions/transaction_category", transaction: transaction, variant: "mobile", in_split_group: in_split_group %>
         </div>
@@ -75,7 +81,8 @@
         </div>
       </div>
 
-      <div class="hidden lg:flex min-w-0 <%= has_running_balance ? "col-span-2" : "col-span-4" %> px-2">
+      <%# NOTES flex 2 %>
+      <div class="hidden lg:flex min-w-0 flex-[2] px-2">
         <% if entry.notes.present? %>
           <span class="whitespace-pre-wrap break-words text-sm text-secondary privacy-sensitive" title="<%= entry.notes %>"><%= entry.notes %></span>
         <% else %>
@@ -83,7 +90,8 @@
         <% end %>
       </div>
 
-      <div class="hidden md:flex min-w-0 items-center gap-1 col-span-2">
+      <%# CATEGORY flex 1 %>
+      <div class="hidden md:flex min-w-0 items-center gap-1 flex-[1]">
         <% if entry.account.supports_trades? && !transaction.transfer? %>
           <%= render "investment_activity/quick_edit_badge", entry: entry, entryable: transaction %>
         <% else %>
@@ -91,7 +99,8 @@
         <% end %>
       </div>
 
-      <div class="shrink-0 col-span-4 lg:col-span-2 ml-auto flex items-center justify-end gap-2 <%= "opacity-50" if entry.excluded %>">
+      <%# AMOUNT mint %>
+      <div class="w-[120px] shrink-0 flex items-center justify-end gap-2 <%= "opacity-50" if entry.excluded %>">
         <% if entry.protected_from_sync? && !entry.excluded? %>
           <%= link_to entry_path(entry), data: { turbo_frame: "drawer", turbo_prefetch: false }, class: "invisible group-hover:visible transition-opacity", title: t("entries.protection.tooltip") do %>
             <%= icon "lock", size: "sm", class: "text-secondary" %>
@@ -99,11 +108,12 @@
         <% end %>
         <%= content_tag :p,
             transaction.transfer? && view_ctx == "global" ? "+/- #{format_money(entry.amount_money.abs)}" : format_money(-entry.amount_money),
-            class: ["privacy-sensitive text-sm font-medium", "text-green-600": entry.amount.negative?] %>
+            class: ["privacy-sensitive text-sm font-medium truncate", "text-green-600": entry.amount.negative?] %>
       </div>
 
+      <%# BALANCE mint %>
       <% if has_running_balance %>
-        <div class="hidden lg:flex min-w-0 col-span-2 justify-end px-2">
+        <div class="hidden lg:flex w-[120px] shrink-0 justify-end px-2">
           <span class="privacy-sensitive text-sm font-medium text-primary truncate" title="<%= format_money(running_balance) %>"><%= format_money(running_balance) %></span>
         </div>
       <% end %>

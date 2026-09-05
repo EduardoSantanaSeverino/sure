@@ -24,21 +24,21 @@
     <div class="grow overflow-y-auto">
       <% if @transactions.any? %>
         <% if @group_by_date == false %>
-          <div class="grid-cols-12 bg-container-inset rounded-xl px-2 py-2 text-xs uppercase font-medium text-secondary items-center mb-2 grid">
-            <p class="col-span-2 hidden lg:block"><%= t("transactions.show.date_label") %></p>
-            <div class="pl-0.5 col-span-2 flex items-center gap-2">
+          <div class="bg-container-inset rounded-xl px-2 py-2 text-xs uppercase font-medium text-secondary items-center mb-2 flex gap-2 lg:gap-3">
+            <div class="hidden lg:flex w-8 shrink-0 justify-center">
               <%= check_box_tag "selection_entry",
-                  class: "checkbox checkbox--light hidden lg:block",
+                  class: "checkbox checkbox--light",
                   data: {
                     action: "bulk-select#togglePageSelection",
                     checkbox_toggle_target: "selectionEntry"
                   } %>
-              <p><%= t("transactions.list.transaction") %></p>
             </div>
-            <p class="col-span-2 hidden lg:block"><%= t("transactions.show.notes") %></p>
-            <p class="col-span-2 md:block hidden"><%= t("transactions.form.category_label") %></p>
-            <p class="col-span-2 ml-auto justify-self-end text-right"><%= t("transactions.show.amount") %></p>
-            <p class="col-span-2 hidden lg:block text-right"><%= t("accounts.show.activity.balance") %></p>
+            <p class="hidden lg:block w-[110px] shrink-0"><%= t("transactions.show.date_label") %></p>
+            <p class="flex-[2] min-w-0"><%= t("transactions.list.transaction") %></p>
+            <p class="hidden lg:block flex-[2] min-w-0"><%= t("transactions.show.notes") %></p>
+            <p class="hidden md:block flex-[1] min-w-0"><%= t("transactions.form.category_label") %></p>
+            <p class="w-[120px] shrink-0 text-right"><%= t("transactions.show.amount") %></p>
+            <p class="hidden lg:block w-[120px] shrink-0 text-right"><%= t("accounts.show.activity.balance") %></p>
           </div>
         <% else %>
           <div class="grid-cols-12 bg-container-inset rounded-xl px-3 py-2 text-xs uppercase font-medium text-secondary items-center mb-2 grid">
