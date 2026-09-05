@@ -58,7 +58,7 @@
       <% end %>
 
       <% if @group_by_date == false %>
-        <div class="bg-container shadow-border-xs rounded-lg divide-y divide-primary/5">
+        <div class="bg-container shadow-border-xs rounded-lg overflow-hidden divide-y divide-primary/5">
           <% @transactions.each do |transaction| %>
             <% entry = transaction.entry %>
             <% if entry.present? %>
