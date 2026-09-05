@@ -1,0 +1,76 @@
+<%# locals: (entry:, balance_trend: nil, view_ctx: "account", in_split_group: false, running_balance: nil) %>
+<% trade = entry.entryable %>
+<% trade_logo_url = trade.security&.display_logo_url %>
+<% has_running_balance = defined?(running_balance) && running_balance.present? %>
+
+<%= turbo_frame_tag dom_id(entry) do %>
+  <%= turbo_frame_tag dom_id(trade) do %>
+    <div class="group flex lg:grid lg:grid-cols-12 items-center text-primary text-xs font-medium py-2 px-3 <%= "pl-6 lg:pl-8" if in_split_group %> border-b border-primary/5 last:border-b-0 <%= "opacity-50 text-secondary" if entry.excluded %>">
+      <% if has_running_balance && view_ctx == "account" %>
+        <div class="hidden lg:flex col-span-2 text-secondary text-xs truncate pr-2"><%= entry.date.strftime("%Y-%m-%d") %></div>
+      <% end %>
+      <div class="pr-2 lg:pr-3 flex items-center gap-2 lg:gap-3 <%= has_running_balance && view_ctx == "account" ? "col-span-2" : "col-span-4" %> min-w-0">
+        <%= check_box_tag dom_id(entry, "selection"),
+            class: "checkbox checkbox--light hidden lg:block",
+            data: {
+              id: entry.id,
+              entry_type: entry.entryable_type,
+              "bulk-select-target": "row",
+              action: "bulk-select#toggleRowSelection",
+              checkbox_toggle_target: "selectionEntry"
+            } %>
+
+        <div class="hidden lg:flex shrink-0">
+          <% if trade_logo_url.present? %>
+            <%= image_tag Setting.transform_brand_fetch_url(trade_logo_url),
+                class: "w-7 h-7 rounded-full border border-secondary",
+                loading: "lazy" %>
+          <% else %>
+            <%= render DS::FilledIcon.new(
+                variant: :text,
+                text: trade.security&.ticker || entry.name,
+                size: "sm",
+                rounded: true
+            ) %>
+          <% end %>
+        </div>
+
+        <div class="min-w-0 flex-1 truncate">
+          <%= link_to entry.name,
+                      entry_path(entry),
+                      data: { turbo_frame: "drawer", turbo_prefetch: false },
+                      class: "hover:underline truncate" %>
+        </div>
+      </div>
+
+      <div class="hidden md:flex min-w-0 items-center gap-1 col-span-2">
+        <%= render "investment_activity/quick_edit_badge", entry: entry, entryable: trade %>
+      </div>
+
+      <div class="hidden lg:flex min-w-0 <%= has_running_balance && view_ctx == "account" ? "col-span-2" : "col-span-4" %> px-2">
+        <% if entry.notes.present? %>
+          <span class="whitespace-pre-wrap break-words text-xs text-secondary privacy-sensitive" title="<%= entry.notes %>"><%= entry.notes %></span>
+        <% else %>
+          <span class="text-secondary/40 text-xs">—</span>
+        <% end %>
+      </div>
+
+      <% if has_running_balance && view_ctx == "account" %>
+        <div class="hidden lg:flex min-w-0 col-span-2 justify-end px-2">
+          <span class="privacy-sensitive text-xs font-medium text-primary truncate" title="<%= format_money(running_balance) %>"><%= format_money(running_balance) %></span>
+        </div>
+      <% end %>
+
+      <div class="shrink-0 col-span-4 lg:col-span-2 ml-auto flex items-center justify-end gap-2 <%= "opacity-50" if entry.excluded %>">
+        <% if entry.protected_from_sync? && !entry.excluded? %>
+          <%= link_to entry_path(entry), data: { turbo_frame: "drawer", turbo_prefetch: false }, class: "invisible group-hover:visible transition-opacity", title: t("entries.protection.tooltip") do %>
+            <%= icon "lock", size: "sm", class: "text-secondary" %>
+          <% end %>
+        <% end %>
+        <%= content_tag :p,
+            format_money(-entry.amount_money),
+            class: ["privacy-sensitive text-xs font-medium", "text-green-600": entry.amount.negative?] %>
+      </div>
+    </div>
+  <% end %>
+<% end %>

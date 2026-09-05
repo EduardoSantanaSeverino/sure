@@ -47,6 +47,8 @@
               <% item.children.each do |child_entry| %>
                 <% if child_entry.entryable_type == "Transaction" %>
                   <%= render "transactions/compact_transaction", entry: child_entry, view_ctx: "account", in_split_group: true %>
+                <% elsif child_entry.entryable_type == "Trade" %>
+                  <%= render "trades/compact_trade", entry: child_entry, view_ctx: "account", in_split_group: false %>
                 <% else %>
                   <%= render child_entry, view_ctx: "account" %>
                 <% end %>
@@ -55,6 +57,8 @@
           <% else %>
             <% if item.entryable_type == "Transaction" %>
               <%= render "transactions/compact_transaction", entry: item, view_ctx: "account", in_split_group: false %>
+            <% elsif item.entryable_type == "Trade" %>
+              <%= render "trades/compact_trade", entry: item, view_ctx: "account", in_split_group: false %>
             <% else %>
               <%= render item, view_ctx: "account" %>
             <% end %>
@@ -64,6 +68,8 @@
         <% entries.each do |entry| %>
           <% if entry.entryable_type == "Transaction" %>
             <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: false %>
+          <% elsif entry.entryable_type == "Trade" %>
+            <%= render "trades/compact_trade", entry: entry, view_ctx: "account", in_split_group: false %>
           <% else %>
             <%= render entry, view_ctx: "account" %>
           <% end %>
