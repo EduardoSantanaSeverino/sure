@@ -1,4 +1,4 @@
-<%# locals: (entry:, balance_trend: nil, view_ctx: "global", in_split_group: false, running_balance: nil) %>
+<%# locals: (entry:, balance_trend: nil, view_ctx: "global", in_split_group: false, running_balance: nil, hide_balance: false) %>
 <% transaction = entry.entryable %>
 <% has_running_balance = defined?(running_balance) && running_balance.present? %>
 
@@ -114,8 +114,8 @@
             class: ["privacy-sensitive text-sm font-medium truncate", "text-green-600": entry.amount.negative?] %>
       </div>
 
-      <%# BALANCE mint %>
-      <% if has_running_balance %>
+      <%# BALANCE mint — global never, account filtered hides (partial table) %>
+      <% if has_running_balance && view_ctx == "account" && !hide_balance %>
         <div class="hidden lg:flex w-[120px] shrink-0 justify-end px-2">
           <span class="privacy-sensitive text-sm font-medium text-primary truncate" title="<%= format_money(running_balance) %>"><%= format_money(running_balance) %></span>
         </div>

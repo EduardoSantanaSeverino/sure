@@ -167,7 +167,9 @@
               <p class="hidden lg:block flex-[2] min-w-0"><%= t("transactions.show.notes") %></p>
               <p class="hidden md:block flex-[1] min-w-0"><%= t("transactions.form.category_label") %></p>
               <p class="w-[120px] shrink-0 text-right"><%= t("transactions.show.amount") %></p>
-              <p class="hidden lg:block w-[120px] shrink-0 text-right"><%= t("accounts.show.activity.balance") %></p>
+              <% unless filtered? %>
+                <p class="hidden lg:block w-[120px] shrink-0 text-right"><%= t("accounts.show.activity.balance") %></p>
+              <% end %>
             </div>
           <% else %>
             <div class="grid-cols-12 bg-container-inset rounded-xl px-3 py-2 text-xs uppercase font-medium text-secondary items-center mb-2 grid">
@@ -206,11 +208,11 @@
             <div class="bg-container shadow-border-xs rounded-lg divide-y divide-primary/5">
               <% activity_dates.flat_map(&:entries).each do |entry| %>
                 <% if entry.entryable_type == "Transaction" %>
-                  <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: entry.split_child? && Current.user.show_split_grouped?, running_balance: running_balances[entry.id] %>
+                  <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: entry.split_child? && Current.user.show_split_grouped?, running_balance: running_balances[entry.id], hide_balance: filtered? %>
                 <% elsif entry.entryable_type == "Trade" %>
-                  <%= render "trades/compact_trade", entry: entry, view_ctx: "account", in_split_group: false, running_balance: running_balances[entry.id] %>
+                  <%= render "trades/compact_trade", entry: entry, view_ctx: "account", in_split_group: false, running_balance: running_balances[entry.id], hide_balance: filtered? %>
                 <% elsif entry.entryable_type == "Valuation" %>
-                  <%= render "valuations/compact_valuation", entry: entry, running_balance: running_balances[entry.id] %>
+                  <%= render "valuations/compact_valuation", entry: entry, running_balance: running_balances[entry.id], hide_balance: filtered? %>
                 <% else %>
                   <%= render entry, view_ctx: "account" %>
                 <% end %>
