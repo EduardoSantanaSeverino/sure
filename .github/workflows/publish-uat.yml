@@ -12,12 +12,32 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: eduardosantanaseverino/sure
+  # Change to "true" to publish both AMD64 and ARM64 images.
+  BUILD_ARM64: "false"
 
 permissions:
   contents: write
   packages: write
 
 jobs:
+  platforms:
+    name: Select image platforms
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      list: ${{ steps.select.outputs.list }}
+    steps:
+      - id: select
+        shell: bash
+        run: |
+          if [[ "$BUILD_ARM64" == "true" ]]; then
+            echo 'matrix=["amd64","arm64"]' >> "$GITHUB_OUTPUT"
+            echo 'list=amd64 arm64' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix=["amd64"]' >> "$GITHUB_OUTPUT"
+            echo 'list=amd64' >> "$GITHUB_OUTPUT"
+          fi
+
   ci:
     uses: ./.github/workflows/ci.yml
     with:
@@ -25,14 +45,12 @@ jobs:
 
   build:
     name: Build UAT Docker image
-    needs: [ ci ]
+    needs: [ci, platforms]
 
     strategy:
       fail-fast: false
       matrix:
-        # Defaults to AMD64-only. To add ARM64, set the repository Actions
-        # variable UAT_DOCKER_PLATFORMS to ["amd64","arm64"].
-        platform: ${{ fromJSON(vars.UAT_DOCKER_PLATFORMS || '["amd64"]') }}
+        platform: ${{ fromJSON(needs.platforms.outputs.matrix) }}
         include:
           - platform: amd64
             runs-on: ubuntu-24.04
@@ -120,7 +138,7 @@ jobs:
 
   merge:
     name: Merge multi-architecture UAT image
-    needs: [build]
+    needs: [build, platforms]
     timeout-minutes: 60
     runs-on: ubuntu-24.04
 
@@ -149,7 +167,7 @@ jobs:
         env:
           TAGS: ${{ needs.build.outputs.tags }}
           DIGESTS_DIR: ${{ runner.temp }}/digests
-          PLATFORMS_JSON: ${{ vars.UAT_DOCKER_PLATFORMS || '["amd64"]' }}
+          PLATFORMS: ${{ needs.platforms.outputs.list }}
         shell: bash -xeuo pipefail {0}
         run: |
           tag_args=()
@@ -159,7 +177,7 @@ jobs:
           done <<< "${TAGS}"
 
           image_args=()
-          for PLATFORM in $(jq -r '.[]' <<< "${PLATFORMS_JSON}"); do
+          for PLATFORM in ${PLATFORMS}; do
             image_args+=("${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:$(<"${DIGESTS_DIR}/digest-${PLATFORM}")")
           done
 
