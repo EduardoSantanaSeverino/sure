@@ -27,7 +27,12 @@ jobs:
       matrix: ${{ steps.select.outputs.matrix }}
       list: ${{ steps.select.outputs.list }}
       include: ${{ steps.select.outputs.include }}
+      image_tag: ${{ steps.timestamp.outputs.image_tag }}
     steps:
+      - id: timestamp
+        shell: bash
+        run: echo "image_tag=v$(date -u +%Y-%m-%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+
       - id: select
         shell: bash
         run: |
@@ -93,6 +98,7 @@ jobs:
           flavor: latest=false
           tags: |
             type=raw,value=uat
+            type=raw,value=${{ needs.platforms.outputs.image_tag }}
             type=sha,format=long
           labels: |
             org.opencontainers.image.created=${{ steps.date.outputs.date }}
