@@ -26,15 +26,18 @@ jobs:
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
       list: ${{ steps.select.outputs.list }}
+      include: ${{ steps.select.outputs.include }}
     steps:
       - id: select
         shell: bash
         run: |
           if [[ "$BUILD_ARM64" == "true" ]]; then
             echo 'matrix=["amd64","arm64"]' >> "$GITHUB_OUTPUT"
+            echo 'include=[{"platform":"amd64","runs-on":"ubuntu-24.04"},{"platform":"arm64","runs-on":"ubuntu-24.04-arm"}]' >> "$GITHUB_OUTPUT"
             echo 'list=amd64 arm64' >> "$GITHUB_OUTPUT"
           else
             echo 'matrix=["amd64"]' >> "$GITHUB_OUTPUT"
+            echo 'include=[{"platform":"amd64","runs-on":"ubuntu-24.04"}]' >> "$GITHUB_OUTPUT"
             echo 'list=amd64' >> "$GITHUB_OUTPUT"
           fi
 
@@ -50,12 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(needs.platforms.outputs.matrix) }}
-        include:
-          - platform: amd64
-            runs-on: ubuntu-24.04
-          - platform: arm64
-            runs-on: ubuntu-24.04-arm
+        include: ${{ fromJSON(needs.platforms.outputs.include) }}
 
     timeout-minutes: 60
     runs-on: ${{ matrix.runs-on }}
