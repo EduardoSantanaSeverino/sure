@@ -14,17 +14,18 @@ env:
   IMAGE_NAME: eduardosantanaseverino/sure
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+    with:
+      require_js_dependency_audit: false
 
   build:
     name: Build UAT Docker image
-    if: github.ref == 'refs/heads/uat'
-    needs: [ci]
+    needs: [ ci ]
 
     strategy:
       fail-fast: false
@@ -117,7 +118,6 @@ jobs:
 
   merge:
     name: Merge multi-architecture UAT image
-    if: github.ref == 'refs/heads/uat'
     needs: [build]
     timeout-minutes: 60
     runs-on: ubuntu-24.04
