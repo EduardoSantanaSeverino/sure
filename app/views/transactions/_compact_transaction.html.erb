@@ -78,6 +78,9 @@
               <% end %>
             <% end %>
           </div>
+          <% if view_ctx == "global" %>
+            <div class="text-secondary text-xs font-normal truncate"><%= entry.account.name %></div>
+          <% end %>
         </div>
       </div>
 

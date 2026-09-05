@@ -25,11 +25,16 @@
 
       <%# TRANSACTION flex 2 %>
       <div class="flex items-center gap-2 lg:gap-3 flex-[2] min-w-0 pr-2">
-        <div class="min-w-0 flex-1 truncate">
-          <%= link_to entry.name,
-                      entry_path(entry),
-                      data: { turbo_frame: "drawer", turbo_prefetch: false },
-                      class: "hover:underline truncate" %>
+        <div class="min-w-0 flex-1">
+          <div class="truncate">
+            <%= link_to entry.name,
+                        entry_path(entry),
+                        data: { turbo_frame: "drawer", turbo_prefetch: false },
+                        class: "hover:underline truncate" %>
+          </div>
+          <% if view_ctx == "global" %>
+            <div class="text-secondary text-xs font-normal truncate"><%= entry.account.name %></div>
+          <% end %>
         </div>
       </div>
 
