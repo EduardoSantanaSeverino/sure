@@ -1,11 +1,17 @@
 class UI::Account::ActivityDate < ApplicationComponent
-  attr_reader :account, :data
+  attr_reader :account, :data, :compact, :group_by_date
 
   delegate :date, :entries, :balance, :transfers, :split_parents, to: :data
 
-  def initialize(account:, data:)
+  def initialize(account:, data:, compact: false, group_by_date: true)
     @account = account
     @data = data
+    @compact = compact
+    @group_by_date = group_by_date
+  end
+
+  def compact?
+    !!@compact
   end
 
   def id

@@ -75,21 +75,46 @@ class AccountsController < ApplicationController
     @chart_view = params[:chart_view] || "balance"
     @tab = params[:tab]
     @accessible_account_ids = Current.user.accessible_accounts.pluck(:id).to_set
-    @q = params.fetch(:q, {}).permit(:search, status: [])
-    entries = @account.entries.excluding_split_parents.search(@q).reverse_chronological.includes(:entryable)
+    @q = params.fetch(:q, {}).permit(:search, :start_date, :end_date, :amount, :amount_operator, status: [], categories: [], merchants: [], tags: [], types: [])
+    # Base entries for the account
+    entries = @account.entries.excluding_split_parents
+    # Search / date / amount / status via EntrySearch
+    entries = EntrySearch.apply_search_filter(entries, @q[:search])
+    entries = EntrySearch.apply_date_filters(entries, @q[:start_date], @q[:end_date])
+    entries = EntrySearch.apply_amount_filter(entries, @q[:amount], @q[:amount_operator])
+    entries = EntrySearch.apply_status_filter(entries, @q[:status])
+    # Category / merchant / tag / type filters use Transaction::Search scoped to this account
+    if @q["categories"].present? || @q["merchants"].present? || @q["tags"].present? || @q["types"].present?
+      txn_entry_ids = Transaction::Search.new(Current.family, filters: @q.slice("categories", "merchants", "tags", "types").to_h, accessible_account_ids: [ @account.id ]).transactions_scope.pluck("entries.id")
+      entries = entries.where(id: txn_entry_ids)
+    end
+    entries = entries.reverse_chronological.includes(:entryable)
     if statement_tab_active?
       build_statement_tab_data
       return render_statement_tab_frame if statement_tab_frame_request?
     end
 
-    per_page = safe_per_page(stored_per_page_default)
-    store_per_page!(per_page) if params[:per_page].present?
+    effective_default = if Current.user.preview_features_enabled? && Current.user.transactions_per_page.present?
+      Current.user.transactions_per_page
+    else
+      stored_per_page_default
+    end
+    per_page = safe_per_page(effective_default)
+    if params[:per_page].present?
+      store_per_page!(per_page)
+      if Current.user.preview_features_enabled?
+        Current.user.update_transaction_preferences("transactions_per_page" => per_page) rescue nil
+      end
+    end
 
     @pagy, @entries = pagy(
       entries,
       limit: per_page,
       params: request.query_parameters.except("tab").merge("tab" => "activity")
     )
+
+    @compact_view = Current.user.preview_features_enabled? && Current.user.transactions_compact?
+    @group_by_date = Current.user.transactions_group_by_date?
 
     # Preload transfer associations only for Transaction entries
     txn_entryables = @entries.filter_map { |e| e.entryable if e.entryable_type == "Transaction" }
@@ -144,6 +169,21 @@ class AccountsController < ApplicationController
     end
 
     @activity_feed_data = Account::ActivityFeedData.new(@account, @entries, split_parents: @split_parents)
+
+    # Running balance per entry for flat compact view only (when not grouped by date)
+    # Uses the same per-day closing balance source as the grouped header (Account::ActivityFeedData#balances_by_date)
+    # so flat rows match the grouped accuracy (e.g. Starting Balance / Opening balance rows).
+    # Per-day granularity is intentional: intra-day ordering is not reflected in the balances table,
+    # but it matches the authoritative balance store used elsewhere in the app.
+    @running_balances = {}
+    if @compact_view && !@group_by_date && @entries.any?
+      dates = @entries.map(&:date).uniq
+      balances_by_date = @account.balances.where(date: dates, currency: @account.currency).index_by(&:date)
+      @entries.each do |e|
+        bal = balances_by_date[e.date]
+        @running_balances[e.id] = bal ? bal.end_balance_money : Money.new(0, @account.currency)
+      end
+    end
   end
 
   def sync
