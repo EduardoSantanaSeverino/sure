@@ -53,6 +53,29 @@ class TradesController < ApplicationController
       respond_to do |format|
         format.html { redirect_back_or_to account_path(@entry.account), notice: t("entries.update.success") }
         format.turbo_stream do
+          is_compact = Current.user.preview_features_enabled? && Current.user.transactions_compact?
+          is_flat_compact = is_compact && !Current.user.transactions_group_by_date?
+          view_ctx = request.referer&.include?("/accounts/") ? "account" : "global" if is_compact
+          running_balance = nil
+          hide_balance = true
+          if is_flat_compact
+            running_balance = Balance.find_by(account_id: @entry.account_id, date: @entry.date)&.end_balance_money || Money.new(0, @entry.currency)
+            hide_balance = if view_ctx == "global"
+              true
+            else
+              request.referer&.match?(/q\[|search=|categories|merchants|tags|types|amount|status|start_date|end_date/) ? true : false
+            end
+          end
+          entry_row_stream = if is_compact
+            turbo_stream.replace(
+              dom_id(@entry),
+              partial: "trades/compact_trade",
+              locals: { entry: @entry, view_ctx: view_ctx || "global", in_split_group: false, running_balance: running_balance, hide_balance: hide_balance }
+            )
+          else
+            turbo_stream.replace(@entry)
+          end
+
           render turbo_stream: [
             turbo_stream.replace(
               dom_id(@entry, :header),
@@ -64,7 +87,7 @@ class TradesController < ApplicationController
               partial: "entries/protection_indicator",
               locals: { entry: @entry, unlock_path: unlock_trade_path(@entry.trade) }
             ),
-            turbo_stream.replace(@entry)
+            entry_row_stream
           ]
         end
       end
