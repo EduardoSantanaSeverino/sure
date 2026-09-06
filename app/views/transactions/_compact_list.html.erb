@@ -21,7 +21,7 @@
   </div>
 
   <% if @pagy.count > 0 || (@projected_recurring.any? && @q.blank?) %>
-    <div class="grow overflow-y-auto">
+    <div class="grow">
       <% if @transactions.any? %>
         <% if @group_by_date == false %>
           <div class="bg-container-inset rounded-xl px-2 py-2 text-xs uppercase font-medium text-secondary items-center mb-2 flex gap-2 lg:gap-3">
