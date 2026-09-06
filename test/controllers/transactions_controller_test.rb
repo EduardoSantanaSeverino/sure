@@ -1559,6 +1559,172 @@ end
     Rails.cache = original_cache
   end
 
+  # --- Preview-gated compact / group_by_date / per_page ---
+
+  test "standard list renders when preview disabled even if compact pref set" do
+    family = families(:empty)
+    sign_in users(:empty)
+    @user = users(:empty)
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => false, "transactions_compact" => true, "transactions_group_by_date" => false))
+    family.accounts.each { |a| a.entries.delete_all }
+    account = family.accounts.create! name: "Test", balance: 0, currency: "USD", accountable: Depository.new
+    create_transaction(account: account)
+
+    get transactions_url
+
+    assert_response :success
+    # standard list header is grid-cols-12 px-5 py-3; compact flat is px-2 py-2 with w-[110px] date col
+    assert_select "div.grid-cols-12.bg-container-inset.rounded-xl.px-5.py-3", count: 1
+    assert_no_match(/w-\[110px\]/, response.body)
+  end
+
+  test "compact grouped list renders when preview enabled and compact true" do
+    family = families(:empty)
+    sign_in users(:empty)
+    @user = users(:empty)
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => true))
+
+    # ensure at least one transaction so header renders
+    family.accounts.each { |a| a.entries.delete_all }
+    account = family.accounts.create! name: "Test", balance: 0, currency: "USD", accountable: Depository.new
+    create_transaction(account: account)
+
+    get transactions_url
+
+    assert_response :success
+    # compact grouped header is px-3 py-2 grid, standard is px-5 py-3
+    assert_select "div.grid-cols-12.bg-container-inset.rounded-xl.px-3.py-2", count: 1
+    assert_select "div.bg-container-inset.rounded-xl.px-2.py-2", count: 0
+  end
+
+  test "compact flat list renders when preview enabled and group_by_date disabled" do
+    family = families(:empty)
+    sign_in users(:empty)
+    @user = users(:empty)
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false))
+
+    family.accounts.each { |a| a.entries.delete_all }
+    account = family.accounts.create! name: "Test", balance: 0, currency: "USD", accountable: Depository.new
+    create_transaction(account: account)
+
+    get transactions_url
+
+    assert_response :success
+    assert_select "div.bg-container-inset.rounded-xl.px-2.py-2", count: 1
+    assert_select "div.grid-cols-12.bg-container-inset.rounded-xl.px-3.py-2", count: 0
+  end
+
+  test "group_by_date toggle only affects compact view" do
+    family = families(:empty)
+    sign_in users(:empty)
+    @user = users(:empty)
+
+    # without compact, both true/false still render standard grouped layout
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => false, "transactions_group_by_date" => false))
+    family.accounts.each { |a| a.entries.delete_all }
+    account = family.accounts.create! name: "Test", balance: 0, currency: "USD", accountable: Depository.new
+    create_transaction(account: account)
+
+    get transactions_url
+    assert_select "div.grid-cols-12.bg-container-inset.rounded-xl.px-5.py-3", count: 1
+
+    @user.update!(preferences: (@user.preferences || {}).merge("transactions_group_by_date" => true))
+    get transactions_url
+    assert_select "div.grid-cols-12.bg-container-inset.rounded-xl.px-5.py-3", count: 1
+  end
+
+  test "preview per_page preference takes precedence over session stored value" do
+    family = families(:empty)
+    sign_in users(:empty)
+    user = users(:empty)
+    user.update!(preferences: (user.preferences || {}).merge("preview_features_enabled" => false))
+    family.accounts.each { |a| a.entries.delete_all }
+    account = family.accounts.create! name: "Test", balance: 0, currency: "USD", accountable: Depository.new
+    25.times { |i| create_transaction(account: account, name: "Tx #{i}", amount: 100 + i, date: Date.current - i.days) }
+
+    # store 50 in session while preview off (persists only to session)
+    get transactions_url(per_page: 50)
+    assert_response :success
+    assert_select "select[name='per_page'] option[value='50'][selected]"
+
+    # enable preview with pref 20 — should win over stored 50 when request has query params (bypasses restore redirect)
+    user.update!(preferences: (user.preferences || {}).merge("preview_features_enabled" => true, "transactions_per_page" => 20))
+
+    get transactions_url(q: { search: "Tx" })
+    assert_response :success
+    assert_select "select[name='per_page'] option[value='20'][selected]"
+    assert_equal 20, css_select("turbo-frame[id^='entry_']").count
+  end
+
+  test "per_page falls back to session when preview disabled ignores preference" do
+    family = families(:empty)
+    sign_in users(:empty)
+    user = users(:empty)
+    family.accounts.each { |a| a.entries.delete_all }
+    account = family.accounts.create! name: "Test", balance: 0, currency: "USD", accountable: Depository.new
+    25.times { |i| create_transaction(account: account, name: "Tx #{i}", amount: 100 + i, date: Date.current - i.days) }
+
+    user.update!(preferences: (user.preferences || {}).merge("preview_features_enabled" => true, "transactions_per_page" => 10))
+    get transactions_url(per_page: 30)
+    assert_select "select[name='per_page'] option[value='30'][selected]"
+    # now disable preview but keep pref 30 in DB — session still holds 30
+    user.update!(preferences: (user.preferences || {}).merge("preview_features_enabled" => false))
+    # explicitly store 50 via session to prove it wins
+    get transactions_url(per_page: 50)
+    assert_select "select[name='per_page'] option[value='50'][selected]"
+    # next request without param should stay at 50, not revert to pref 30
+    get transactions_url(q: { search: "Tx" })
+    assert_select "select[name='per_page'] option[value='50'][selected]"
+  end
+
+  test "per_page param persists to preference only when preview enabled and value allowed" do
+    family = families(:empty)
+    sign_in users(:empty)
+    user = users(:empty)
+    user.update!(preferences: (user.preferences || {}).merge("preview_features_enabled" => true))
+    user.update!(preferences: user.preferences.merge("transactions_per_page" => nil))
+
+    get transactions_url(per_page: 30)
+    assert_response :success
+    assert_equal 30, user.reload.transactions_per_page
+
+    # non-allowed value (nearest would be 30) must not persist
+    get transactions_url(per_page: 27)
+    assert_response :success
+    assert_equal 30, user.reload.transactions_per_page, "nearest allowed must not be persisted when not exact"
+
+    # preview off — must not persist even when allowed
+    user.update!(preferences: (user.preferences || {}).merge("preview_features_enabled" => false))
+    get transactions_url(per_page: 50)
+    assert_response :success
+    assert_equal 30, user.reload.transactions_per_page
+  end
+
+  test "restore redirect uses preference default when no stored per_page" do
+    family = families(:empty)
+    sign_in users(:empty)
+    user = users(:empty)
+    user.update!(preferences: (user.preferences || {}).merge("preview_features_enabled" => true, "transactions_per_page" => 20))
+    # seed session with q so should_restore_params? is true but per_page blank
+    Current.session.update!(prev_transaction_page_params: { "q" => { "search" => "foo" }, "page" => "1", "per_page" => nil })
+
+    get transactions_url
+    assert_response :redirect
+    assert_equal "20", Rack::Utils.parse_query(URI.parse(response.location).query)["per_page"]
+  end
+
+  test "restore redirect falls back to 50 when preview disabled and no stored per_page" do
+    family = families(:empty)
+    sign_in users(:empty)
+    user = users(:empty)
+    user.update!(preferences: (user.preferences || {}).merge("preview_features_enabled" => false, "transactions_per_page" => 20))
+    Current.session.update!(prev_transaction_page_params: { "q" => { "search" => "foo" }, "page" => "1", "per_page" => nil })
+
+    get transactions_url
+    assert_response :redirect
+    assert_equal "50", Rack::Utils.parse_query(URI.parse(response.location).query)["per_page"]
+  end
+
   private
     def rendered_entry_ids
       css_select("turbo-frame[id^='entry_']").map { |node| node["id"].delete_prefix("entry_") }
