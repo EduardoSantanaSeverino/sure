@@ -59,7 +59,7 @@
 
       <% if @group_by_date == false %>
         <div class="bg-container-inset rounded-xl p-1">
-          <div class="bg-container shadow-border-xs rounded-lg overflow-hidden">
+          <div class="bg-container shadow-border-xs rounded-lg">
             <% @transactions.each do |transaction| %>
               <% entry = transaction.entry %>
               <% if entry.present? %>

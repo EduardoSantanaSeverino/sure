@@ -51,7 +51,7 @@
               id: "entries-search",
               scope: :q,
               method: :get,
-              data: { controller: "auto-submit-form" } do |form| %>
+              data: { controller: "auto-submit-form", turbo_frame: dom_id(account, "entries") } do |form| %>
         <div class="flex gap-2 mb-4">
           <div class="grow">
             <div class="flex items-center px-3 py-2 gap-2 border border-secondary rounded-lg focus-within:border-primary">
@@ -206,7 +206,7 @@
         <div>
           <% if compact? && !group_by_date %>
             <div class="bg-container-inset rounded-xl p-1">
-              <div class="bg-container shadow-border-xs rounded-lg overflow-hidden">
+              <div class="bg-container shadow-border-xs rounded-lg">
                 <% activity_dates.flat_map(&:entries).each do |entry| %>
                   <% if entry.entryable_type == "Transaction" %>
                     <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: entry.split_child? && Current.user.show_split_grouped?, running_balance: running_balances[entry.id], hide_balance: filtered? %>
