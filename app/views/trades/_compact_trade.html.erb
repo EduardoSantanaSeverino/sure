@@ -4,7 +4,7 @@
 
 <%= turbo_frame_tag dom_id(entry) do %>
   <%= turbo_frame_tag dom_id(trade) do %>
-    <div class="group flex items-center gap-2 lg:gap-3 text-primary text-sm font-medium py-2 px-3 <%= "pl-6 lg:pl-8" if in_split_group %> border-b border-primary/5 <%= "opacity-50 text-secondary" if entry.excluded %>">
+    <div class="group flex items-center gap-2 lg:gap-3 text-primary text-sm font-medium py-2 px-3 <%= "pl-6 lg:pl-8" if in_split_group %> <%= "opacity-50 text-secondary" if entry.excluded %>">
       <%# ☐ mint %>
       <div class="hidden lg:flex w-8 shrink-0 justify-center">
         <%= check_box_tag dom_id(entry, "selection"),

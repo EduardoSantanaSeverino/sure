@@ -205,7 +205,7 @@
 
         <div>
           <% if compact? && !group_by_date %>
-            <div class="bg-container shadow-border-xs rounded-lg overflow-hidden divide-y divide-primary/5">
+            <div class="bg-container shadow-border-xs rounded-lg overflow-hidden">
               <% activity_dates.flat_map(&:entries).each do |entry| %>
                 <% if entry.entryable_type == "Transaction" %>
                   <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: entry.split_child? && Current.user.show_split_grouped?, running_balance: running_balances[entry.id], hide_balance: filtered? %>
