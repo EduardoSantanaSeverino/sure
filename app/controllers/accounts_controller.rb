@@ -103,7 +103,11 @@ class AccountsController < ApplicationController
     if params[:per_page].present?
       store_per_page!(per_page)
       if Current.user.preview_features_enabled?
-        Current.user.update_transaction_preferences("transactions_per_page" => per_page) rescue nil
+        begin
+          Current.user.update_transaction_preferences("transactions_per_page" => per_page)
+        rescue ActiveRecord::ActiveRecordError => e
+          Rails.logger.warn("Failed to persist transactions_per_page preference for user=#{Current.user.id}: #{e.class}: #{e.message}")
+        end
       end
     end
 
