@@ -755,7 +755,11 @@ class TransactionsController < ApplicationController
           safe = safe_per_page(params[:per_page])
           # safe_per_page returns nearest allowed; only persist if it matches the requested value
           if safe.to_s == params[:per_page].to_s
-            Current.user.update_transaction_preferences("transactions_per_page" => safe) rescue nil
+            begin
+              Current.user.update_transaction_preferences("transactions_per_page" => safe)
+            rescue ActiveRecord::ActiveRecordError => e
+              Rails.logger.warn("Failed to persist transactions_per_page preference for user=#{Current.user.id}: #{e.class}: #{e.message}")
+            end
           end
         end
 
