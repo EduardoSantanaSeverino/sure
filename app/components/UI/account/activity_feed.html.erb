@@ -58,7 +58,7 @@
               <%= helpers.icon("search") %>
 
               <%= hidden_field_tag :account_id, account.id %>
-              <%= hidden_field_tag :per_page, params[:per_page] %>
+              <%= hidden_field_tag :per_page, params[:per_page].presence || pagy.limit %>
 
               <%= form.search_field :search,
                             placeholder: t("accounts.show.activity.search.placeholder"),
@@ -106,11 +106,11 @@
 
                     <div class="flex justify-between items-center gap-2 bg-container p-3 shrink-0">
                       <div>
-                        <% if @q.present? %>
+                        <% if q.present? %>
                           <%= render DS::Link.new(
                             text: t("transactions.search.menu.clear_filters"),
                             variant: "ghost",
-                            href: account_path(@account, tab: "activity"),
+                            href: helpers.account_path(account, tab: "activity"),
                           ) %>
                         <% end %>
                       </div>
