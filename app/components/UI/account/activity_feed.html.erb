@@ -106,7 +106,7 @@
 
                     <div class="flex justify-between items-center gap-2 bg-container p-3 shrink-0">
                       <div>
-                        <% if q.present? %>
+                        <% if filtered? %>
                           <%= render DS::Link.new(
                             text: t("transactions.search.menu.clear_filters"),
                             variant: "ghost",
