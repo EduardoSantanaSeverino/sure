@@ -224,6 +224,36 @@ class TransactionsController < ApplicationController
         format.html { redirect_back_or_to account_path(@entry.account), notice: t(".updated") }
         format.turbo_stream do
           in_split_group = helpers.in_split_group?(@entry, params[:grouped])
+          # Compact-aware row replace: keep flat/grouped compact avatar-free (only CATEGORY pill recolors)
+          is_compact = Current.user.preview_features_enabled? && Current.user.transactions_compact?
+          is_flat_compact = is_compact && !Current.user.transactions_group_by_date?
+          @accessible_account_ids ||= Current.user.accessible_accounts.pluck(:id) if is_compact
+          view_ctx = request.referer&.include?("/accounts/") ? "account" : "global" if is_compact
+          running_balance = nil
+          hide_balance = true
+          if is_flat_compact
+            running_balance = Balance.find_by(account_id: @entry.account_id, date: @entry.date)&.end_balance_money || Money.new(0, @entry.currency)
+            if view_ctx == "global"
+              hide_balance = true
+            else
+              is_filtered = request.referer&.match?(/q\[|search=|categories|merchants|tags|types|amount|status|start_date|end_date/)
+              hide_balance = is_filtered ? true : false
+            end
+          end
+          entry_row_stream = if is_compact
+            turbo_stream.replace(
+              dom_id(@entry),
+              partial: "transactions/compact_transaction",
+              locals: { entry: @entry, view_ctx: view_ctx || "global", in_split_group: in_split_group, running_balance: running_balance, hide_balance: hide_balance }
+            )
+          else
+            turbo_stream.replace(
+              dom_id(@entry),
+              partial: "entries/entry",
+              locals: { entry: @entry, in_split_group: in_split_group }
+            )
+          end
+
           render turbo_stream: [
             turbo_stream.replace(
               dom_id(@entry, :header),
@@ -245,11 +275,7 @@ class TransactionsController < ApplicationController
               partial: "transactions/mark_recurring",
               locals: { entry: @entry }
             ) if can_edit_entry? && !@entry.split_child?),
-            turbo_stream.replace(
-              dom_id(@entry),
-              partial: "entries/entry",
-              locals: { entry: @entry, in_split_group: in_split_group }
-            ),
+            entry_row_stream,
             *flash_notification_stream_items
           ].compact
         end

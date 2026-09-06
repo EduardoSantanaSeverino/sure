@@ -58,20 +58,22 @@
       <% end %>
 
       <% if @group_by_date == false %>
-        <div class="bg-container shadow-border-xs rounded-lg overflow-hidden">
-          <% @transactions.each do |transaction| %>
-            <% entry = transaction.entry %>
-            <% if entry.present? %>
-              <% if Current.user.show_split_grouped? && entry.split_child? && @split_parents[entry.parent_entry_id] %>
-                <%# Split children rendered flat in compact ungrouned mode: show parent row once %>
-                <% parent = @split_parents[entry.parent_entry_id] %>
-                <%# Render parent if not yet rendered - simplified: render child with indent %>
-                <%= render "transactions/compact_transaction", entry: entry, view_ctx: "global", in_split_group: true, running_balance: @running_balances[entry.id] %>
-              <% else %>
-                <%= render "transactions/compact_transaction", entry: entry, view_ctx: "global", in_split_group: false, running_balance: @running_balances[entry.id] %>
+        <div class="bg-container-inset rounded-xl p-1">
+          <div class="bg-container shadow-border-xs rounded-lg overflow-hidden">
+            <% @transactions.each do |transaction| %>
+              <% entry = transaction.entry %>
+              <% if entry.present? %>
+                <% if Current.user.show_split_grouped? && entry.split_child? && @split_parents[entry.parent_entry_id] %>
+                  <%# Split children rendered flat in compact ungrouned mode: show parent row once %>
+                  <% parent = @split_parents[entry.parent_entry_id] %>
+                  <%# Render parent if not yet rendered - simplified: render child with indent %>
+                  <%= render "transactions/compact_transaction", entry: entry, view_ctx: "global", in_split_group: true, running_balance: @running_balances[entry.id] %>
+                <% else %>
+                  <%= render "transactions/compact_transaction", entry: entry, view_ctx: "global", in_split_group: false, running_balance: @running_balances[entry.id] %>
+                <% end %>
               <% end %>
             <% end %>
-          <% end %>
+          </div>
         </div>
       <% else %>
         <div class="space-y-3">
