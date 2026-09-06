@@ -60,17 +60,23 @@
       <% if @group_by_date == false %>
         <div class="bg-container-inset rounded-xl p-1">
           <div class="bg-container shadow-border-xs rounded-lg">
-            <% @transactions.each do |transaction| %>
-              <% entry = transaction.entry %>
-              <% if entry.present? %>
-                <% if Current.user.show_split_grouped? && entry.split_child? && @split_parents[entry.parent_entry_id] %>
-                  <%# Split children rendered flat in compact ungrouned mode: show parent row once %>
-                  <% parent = @split_parents[entry.parent_entry_id] %>
-                  <%# Render parent if not yet rendered - simplified: render child with indent %>
-                  <%= render "transactions/compact_transaction", entry: entry, view_ctx: "global", in_split_group: true, running_balance: @running_balances[entry.id] %>
+            <% entries = @transactions.map(&:entry).compact %>
+            <% if Current.user.show_split_grouped? %>
+              <% group_split_entries(entries, @split_parents).each do |item| %>
+                <% if item.is_a?(EntriesHelper::SplitGroup) %>
+                  <div class="split-group">
+                    <%= render "transactions/split_parent_row", entry: item.parent %>
+                    <% item.children.each do |child_entry| %>
+                      <%= render "transactions/compact_transaction", entry: child_entry, view_ctx: "global", in_split_group: true, running_balance: @running_balances[child_entry.id] %>
+                    <% end %>
+                  </div>
                 <% else %>
-                  <%= render "transactions/compact_transaction", entry: entry, view_ctx: "global", in_split_group: false, running_balance: @running_balances[entry.id] %>
+                  <%= render "transactions/compact_transaction", entry: item, view_ctx: "global", in_split_group: false, running_balance: @running_balances[item.id] %>
                 <% end %>
+              <% end %>
+            <% else %>
+              <% entries.each do |entry| %>
+                <%= render "transactions/compact_transaction", entry: entry, view_ctx: "global", in_split_group: false, running_balance: @running_balances[entry.id] %>
               <% end %>
             <% end %>
           </div>
