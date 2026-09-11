@@ -60,17 +60,10 @@ class TransactionsController < ApplicationController
     @compact_view = Current.user.preview_features_enabled? && Current.user.transactions_compact?
     @group_by_date = Current.user.transactions_group_by_date?
 
-    @running_balances = {}
-    if @compact_view && !@group_by_date && @transactions.any?
-      dates = @transactions.map { |t| t.entry.date }.uniq
-      account_ids = @transactions.map { |t| t.entry.account_id }.uniq
-      balances = Balance.where(account_id: account_ids, date: dates).index_by { |b| [ b.account_id, b.date ] }
-      @transactions.each do |txn|
-        entry = txn.entry
-        bal = balances[[ entry.account_id, entry.date ]]
-        @running_balances[entry.id] = bal ? bal.end_balance_money : Money.new(0, entry.currency)
-      end
-    end
+    # Note: the global transactions page never shows a per-row balance column
+    # (compact partials only render it when view_ctx == "account"), so unlike
+    # AccountsController#show we intentionally don't compute running balances
+    # here — it would be an extra Balance query whose result is never displayed.
 
     # Preload split parent data
     entry_ids = @transactions.map { |t| t.entry.id }
@@ -228,17 +221,13 @@ class TransactionsController < ApplicationController
           is_compact = Current.user.preview_features_enabled? && Current.user.transactions_compact?
           is_flat_compact = is_compact && !Current.user.transactions_group_by_date?
           @accessible_account_ids ||= Current.user.accessible_accounts.pluck(:id) if is_compact
-          view_ctx = request.referer&.include?("/accounts/") ? "account" : "global" if is_compact
+          assign_compact_row_context
+          view_ctx, is_filtered = @view_ctx, @is_filtered
           running_balance = nil
           hide_balance = true
           if is_flat_compact
             running_balance = Balance.find_by(account_id: @entry.account_id, date: @entry.date)&.end_balance_money || Money.new(0, @entry.currency)
-            if view_ctx == "global"
-              hide_balance = true
-            else
-              is_filtered = request.referer&.match?(/q\[|search=|categories|merchants|tags|types|amount|status|start_date|end_date/)
-              hide_balance = is_filtered ? true : false
-            end
+            hide_balance = view_ctx != "account" || is_filtered ? true : false
           end
           entry_row_stream = if is_compact
             turbo_stream.replace(
@@ -281,6 +270,7 @@ class TransactionsController < ApplicationController
         end
       end
     else
+      assign_compact_row_context
       assign_mark_recurring_state
       render :show, status: :unprocessable_entity
     end
