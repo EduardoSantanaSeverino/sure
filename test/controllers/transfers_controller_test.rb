@@ -744,7 +744,7 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
   test "can update both outflow and inflow categories on categorizable transfer" do
     transfer = transfers(:investment_contribution)
     outflow_category = categories(:food_and_drink)
-    inflow_category = categories(:shopping)
+    inflow_category = categories(:transfer_shopping)
 
     patch transfer_url(transfer), params: {
       transfer: {

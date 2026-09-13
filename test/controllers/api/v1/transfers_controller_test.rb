@@ -90,7 +90,7 @@ class Api::V1::TransfersControllerTest < ActionDispatch::IntegrationTest
 
   test "transfer response includes category for both transaction sides" do
     @transfer.outflow_transaction.update!(category: categories(:food_and_drink))
-    @transfer.inflow_transaction.update!(category: categories(:shopping))
+    @transfer.inflow_transaction.update!(category: categories(:transfer_shopping))
 
     get api_v1_transfer_url(@transfer), headers: api_headers(@api_key)
 
@@ -104,8 +104,8 @@ class Api::V1::TransfersControllerTest < ActionDispatch::IntegrationTest
 
     inflow_category = response_data.dig("inflow_transaction", "category")
     assert_not_nil inflow_category
-    assert_equal categories(:shopping).id, inflow_category["id"]
-    assert_equal "Shopping", inflow_category["name"]
+    assert_equal categories(:transfer_shopping).id, inflow_category["id"]
+    assert_equal "Transfer Shopping", inflow_category["name"]
   end
 
   test "transfer response includes null category when not set" do

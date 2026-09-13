@@ -16,6 +16,6 @@ subcategory:
   parent: food_and_drink
   family: dylan_family
 
-shopping:
-  name: Shopping
+transfer_shopping:
+  name: Transfer Shopping
   family: dylan_family
