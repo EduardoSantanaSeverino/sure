@@ -15,3 +15,7 @@ subcategory:
   name: Restaurants
   parent: food_and_drink
   family: dylan_family
+
+shopping:
+  name: Shopping
+  family: dylan_family

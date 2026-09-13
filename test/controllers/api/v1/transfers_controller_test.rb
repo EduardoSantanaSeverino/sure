@@ -88,6 +88,39 @@ class Api::V1::TransfersControllerTest < ActionDispatch::IntegrationTest
     assert response_data.key?("destination_fee_currency")
   end
 
+  test "transfer response includes category for both transaction sides" do
+    @transfer.outflow_transaction.update!(category: categories(:food_and_drink))
+    @transfer.inflow_transaction.update!(category: categories(:shopping))
+
+    get api_v1_transfer_url(@transfer), headers: api_headers(@api_key)
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+
+    outflow_category = response_data.dig("outflow_transaction", "category")
+    assert_not_nil outflow_category
+    assert_equal categories(:food_and_drink).id, outflow_category["id"]
+    assert_equal "Food & Drink", outflow_category["name"]
+
+    inflow_category = response_data.dig("inflow_transaction", "category")
+    assert_not_nil inflow_category
+    assert_equal categories(:shopping).id, inflow_category["id"]
+    assert_equal "Shopping", inflow_category["name"]
+  end
+
+  test "transfer response includes null category when not set" do
+    @transfer.outflow_transaction.update!(category: nil)
+    @transfer.inflow_transaction.update!(category: nil)
+
+    get api_v1_transfer_url(@transfer), headers: api_headers(@api_key)
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+
+    assert_nil response_data.dig("outflow_transaction", "category")
+    assert_nil response_data.dig("inflow_transaction", "category")
+  end
+
   test "returns not found for another family's transfer" do
     get api_v1_transfer_url(@other_transfer), headers: api_headers(@api_key)
 
