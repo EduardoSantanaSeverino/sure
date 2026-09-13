@@ -234,7 +234,7 @@ class TransfersController < ApplicationController
     end
 
     def transfer_update_params
-      params.require(:transfer).permit(:notes, :status, :category_id, :amount, :source_fee_amount, :destination_fee_amount)
+      params.require(:transfer).permit(:notes, :status, :category_id, :inflow_category_id, :amount, :source_fee_amount, :destination_fee_amount)
     end
 
     def update_transfer_status
@@ -247,6 +247,7 @@ class TransfersController < ApplicationController
 
     def update_transfer_details
       @transfer.outflow_transaction.update!(category_id: transfer_update_params[:category_id])
+      @transfer.inflow_transaction.update!(category_id: transfer_update_params[:inflow_category_id]) if transfer_update_params[:inflow_category_id].present?
       @transfer.update!(notes: transfer_update_params[:notes])
     end
 

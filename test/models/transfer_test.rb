@@ -157,32 +157,28 @@ class TransferTest < ActiveSupport::TestCase
     assert_equal "funds_movement", Transfer.kind_for_account(accounts(:depository))
   end
 
-  test "has_source_fee? returns true when source fee present" do
-    transfer = transfers(:one)
-    entry = accounts(:depository).entries.create!(name: "Fee", date: Date.current, amount: 5, currency: "USD", entryable: Transaction.new(kind: "standard"))
-    transfer.fee_transactions << entry.entryable
-    assert transfer.has_source_fee?
-    assert transfer.has_fees?
+  test "categorizable? returns true for loan payment" do
+    transfer = transfers(:loan_payment)
+    assert transfer.categorizable?
   end
 
-  test "has_destination_fee? returns true when destination fee present" do
-    transfer = transfers(:one)
-    entry = accounts(:credit_card).entries.create!(name: "Fee", date: Date.current, amount: 5, currency: "USD", entryable: Transaction.new(kind: "standard"))
-    transfer.fee_transactions << entry.entryable
-    assert transfer.has_destination_fee?
-    assert transfer.has_fees?
+  test "categorizable? returns true for investment contribution" do
+    transfer = transfers(:investment_contribution)
+    assert transfer.categorizable?
   end
 
-  test "has_fees? returns false when no fees" do
-    transfer = transfers(:one)
-    refute transfer.has_fees?
+  test "categorizable? returns false for investment to investment rollover" do
+    transfer = transfers(:investment_rollover)
+    assert_not transfer.categorizable?
   end
 
-  test "total_fee sums source and destination fees" do
+  test "categorizable? returns false for regular transfer" do
     transfer = transfers(:one)
-    entry1 = accounts(:depository).entries.create!(name: "Fee", date: Date.current, amount: 3, currency: "USD", entryable: Transaction.new(kind: "standard"))
-    entry2 = accounts(:credit_card).entries.create!(name: "Fee", date: Date.current, amount: 2, currency: "USD", entryable: Transaction.new(kind: "standard"))
-    transfer.fee_transactions << entry1.entryable << entry2.entryable
-    assert_equal 5, transfer.total_fee
+    assert_not transfer.categorizable?
+  end
+
+  test "categorizable? returns false for credit card payment" do
+    transfer = transfers(:cc_payment)
+    assert_not transfer.categorizable?
   end
 end
