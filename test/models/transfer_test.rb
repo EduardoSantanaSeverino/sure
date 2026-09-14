@@ -158,17 +158,17 @@ class TransferTest < ActiveSupport::TestCase
   end
 
   test "categorizable? returns true for loan payment" do
-    transfer = transfers(:loan_payment)
+    transfer = create_kind_transfer(accounts(:depository), accounts(:loan))
     assert transfer.categorizable?
   end
 
   test "categorizable? returns true for investment contribution" do
-    transfer = transfers(:investment_contribution)
+    transfer = create_kind_transfer(accounts(:depository), accounts(:investment))
     assert transfer.categorizable?
   end
 
   test "categorizable? returns false for investment to investment rollover" do
-    transfer = transfers(:investment_rollover)
+    transfer = create_kind_transfer(accounts(:investment), accounts(:crypto))
     assert_not transfer.categorizable?
   end
 
@@ -178,7 +178,18 @@ class TransferTest < ActiveSupport::TestCase
   end
 
   test "categorizable? returns false for credit card payment" do
-    transfer = transfers(:cc_payment)
+    transfer = create_kind_transfer(accounts(:depository), accounts(:credit_card))
     assert_not transfer.categorizable?
   end
+
+  private
+    def create_kind_transfer(source_account, destination_account)
+      Transfer::Creator.new(
+        family: families(:dylan_family),
+        source_account_id: source_account.id,
+        destination_account_id: destination_account.id,
+        date: Date.current,
+        amount: 100
+      ).create
+    end
 end

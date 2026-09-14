@@ -712,7 +712,7 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "can update outflow category on categorizable transfer (loan_payment)" do
-    transfer = transfers(:loan_payment)
+    transfer = create_categorizable_transfer(accounts(:loan))
     category = categories(:food_and_drink)
 
     patch transfer_url(transfer), params: { transfer: { category_id: category.id } }
@@ -722,7 +722,7 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "can update outflow category on categorizable transfer (investment_contribution)" do
-    transfer = transfers(:investment_contribution)
+    transfer = create_categorizable_transfer(accounts(:investment))
     category = categories(:food_and_drink)
 
     patch transfer_url(transfer), params: { transfer: { category_id: category.id } }
@@ -732,7 +732,7 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "can update inflow category on categorizable transfer (investment_contribution)" do
-    transfer = transfers(:investment_contribution)
+    transfer = create_categorizable_transfer(accounts(:investment))
     category = categories(:food_and_drink)
 
     patch transfer_url(transfer), params: { transfer: { inflow_category_id: category.id } }
@@ -742,7 +742,7 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "can update both outflow and inflow categories on categorizable transfer" do
-    transfer = transfers(:investment_contribution)
+    transfer = create_categorizable_transfer(accounts(:investment))
     outflow_category = categories(:food_and_drink)
     inflow_category = categories(:transfer_shopping)
 
@@ -778,4 +778,15 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to transactions_url
   end
+
+  private
+    def create_categorizable_transfer(destination_account)
+      Transfer::Creator.new(
+        family: families(:dylan_family),
+        source_account_id: accounts(:depository).id,
+        destination_account_id: destination_account.id,
+        date: Date.current,
+        amount: 100
+      ).create
+    end
 end
