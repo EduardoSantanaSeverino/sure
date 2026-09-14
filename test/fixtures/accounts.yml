@@ -60,6 +60,17 @@ investment:
   accountable: one
   status: active
 
+investment_two:
+  family: dylan_family
+  owner: family_admin
+  name: Fidelity Brokerage Account
+  balance: 15000
+  cash_balance: 3000
+  currency: USD
+  accountable_type: Investment
+  accountable: two
+  status: active
+
 loan:
   family: dylan_family
   owner: family_admin

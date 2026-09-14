@@ -29,17 +29,21 @@ class TransactionsController < ApplicationController
                        .includes(
                          { entry: :account },
                          :category, :merchant, :tags,
-                         # Union of #2643 counterpart UI + Skylight category-menu N+1:
-                         # - outflow rows need inflow_transaction (to_account) for both
-                         #   counterpart display and Transfer#categorizable?/#payment?
-                         # - inflow rows need outflow_transaction (from_account) for
-                         #   counterpart display, and inflow_transaction (to_account)
-                         #   for the category menu on the same row
-                         {
-                           transfer_as_outflow: {
-                             inflow_transaction: { entry: :account }
-                           }
-                         },
+                          # Union of #2643 counterpart UI + Skylight category-menu N+1:
+                          # - outflow rows need inflow_transaction (to_account) for
+                          #   counterpart display and Transfer#categorizable?/#payment?,
+                          #   plus outflow_transaction (from_account) since
+                          #   #categorizable? also walks the source side for
+                          #   investment contributions
+                          # - inflow rows need outflow_transaction (from_account) for
+                          #   counterpart display, and inflow_transaction (to_account)
+                          #   for the category menu on the same row
+                          {
+                            transfer_as_outflow: {
+                              inflow_transaction: { entry: :account },
+                              outflow_transaction: { entry: :account }
+                            }
+                          },
                          {
                            transfer_as_inflow: {
                              inflow_transaction: { entry: :account },

@@ -45,7 +45,7 @@ transfer_in:
 
 loan_payment_out:
   name: Payment to loan account
-  date: <%= 3.days.ago.to_date %>
+  date: 2024-01-15
   amount: 100
   currency: USD
   account: depository
@@ -54,7 +54,7 @@ loan_payment_out:
 
 loan_payment_in:
   name: Payment received from checking account
-  date: <%= 3.days.ago.to_date %>
+  date: 2024-01-15
   amount: -100
   currency: USD
   account: loan
@@ -63,7 +63,7 @@ loan_payment_in:
 
 investment_contribution_out:
   name: Transfer to investment account
-  date: <%= 3.days.ago.to_date %>
+  date: 2024-01-15
   amount: 100
   currency: USD
   account: depository
@@ -72,7 +72,7 @@ investment_contribution_out:
 
 investment_contribution_in:
   name: Transfer from checking account
-  date: <%= 3.days.ago.to_date %>
+  date: 2024-01-15
   amount: -100
   currency: USD
   account: investment
@@ -81,16 +81,16 @@ investment_contribution_in:
 
 investment_rollover_out:
   name: Transfer to IRA
-  date: <%= 3.days.ago.to_date %>
+  date: 2024-01-15
   amount: 100
   currency: USD
-  account: investment
+  account: investment_two
   entryable_type: Transaction
   entryable: investment_rollover_out
 
 investment_rollover_in:
   name: Transfer from brokerage
-  date: <%= 3.days.ago.to_date %>
+  date: 2024-01-15
   amount: -100
   currency: USD
   account: investment
@@ -99,7 +99,7 @@ investment_rollover_in:
 
 cc_payment_out:
   name: Payment to credit card
-  date: <%= 3.days.ago.to_date %>
+  date: 2024-01-15
   amount: 100
   currency: USD
   account: depository
@@ -108,7 +108,7 @@ cc_payment_out:
 
 cc_payment_in:
   name: Payment received from checking
-  date: <%= 3.days.ago.to_date %>
+  date: 2024-01-15
   amount: -100
   currency: USD
   account: credit_card
