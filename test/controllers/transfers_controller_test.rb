@@ -731,31 +731,28 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_equal category.id, transfer.reload.outflow_transaction.category_id
   end
 
-  test "can update inflow category on categorizable transfer (investment_contribution)" do
+  test "updates both legs with a single category on categorizable transfer" do
     transfer = create_categorizable_transfer(accounts(:investment))
     category = categories(:food_and_drink)
 
-    patch transfer_url(transfer), params: { transfer: { inflow_category_id: category.id } }
+    patch transfer_url(transfer), params: { transfer: { category_id: category.id } }
 
     assert_redirected_to transactions_url
+    assert_equal category.id, transfer.reload.outflow_transaction.category_id
     assert_equal category.id, transfer.reload.inflow_transaction.category_id
   end
 
-  test "can update both outflow and inflow categories on categorizable transfer" do
-    transfer = create_categorizable_transfer(accounts(:investment))
-    outflow_category = categories(:food_and_drink)
-    inflow_category = categories(:transfer_shopping)
+  test "clearing the category clears both legs on categorizable transfer" do
+    transfer = create_categorizable_transfer(accounts(:loan))
+    category = categories(:food_and_drink)
+    transfer.outflow_transaction.update!(category: category)
+    transfer.inflow_transaction.update!(category: category)
 
-    patch transfer_url(transfer), params: {
-      transfer: {
-        category_id: outflow_category.id,
-        inflow_category_id: inflow_category.id
-      }
-    }
+    patch transfer_url(transfer), params: { transfer: { category_id: "" } }
 
     assert_redirected_to transactions_url
-    assert_equal outflow_category.id, transfer.reload.outflow_transaction.category_id
-    assert_equal inflow_category.id, transfer.reload.inflow_transaction.category_id
+    assert_nil transfer.reload.outflow_transaction.category_id
+    assert_nil transfer.reload.inflow_transaction.category_id
   end
 
   test "cannot update category on non-categorizable transfer (regular transfer)" do
@@ -770,13 +767,15 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to transactions_url
   end
 
-  test "cannot update inflow category on non-categorizable transfer" do
+  test "ignores unknown inflow_category_id param on transfer update" do
     transfer = transfers(:one)
     category = categories(:food_and_drink)
 
     patch transfer_url(transfer), params: { transfer: { inflow_category_id: category.id } }
 
     assert_redirected_to transactions_url
+    assert_nil transfer.reload.outflow_transaction.category_id
+    assert_nil transfer.reload.inflow_transaction.category_id
   end
 
   private

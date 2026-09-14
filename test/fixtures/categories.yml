@@ -15,7 +15,3 @@ subcategory:
   name: Restaurants
   parent: food_and_drink
   family: dylan_family
-
-transfer_shopping:
-  name: Transfer Shopping
-  family: dylan_family
