@@ -49,8 +49,6 @@ en:
       bank_charges: Bank Charges
       source_fee: Source fee
       destination_fee: Destination fee
-      outflow_category: "Outflow category"
-      inflow_category: "Inflow category"
       category: Category
       uncategorized: Uncategorized
     update:

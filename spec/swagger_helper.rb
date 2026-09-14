@@ -907,15 +907,6 @@ RSpec.configure do |config|
                   name: { type: :string },
                   account_type: { type: :string, nullable: true }
                 }
-              },
-              category: {
-                type: :object,
-                nullable: true,
-                properties: {
-                  id: { type: :string, format: :uuid },
-                  name: { type: :string },
-                  color: { type: :string }
-                }
               }
             }
           },
