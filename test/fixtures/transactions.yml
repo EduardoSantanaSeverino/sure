@@ -6,23 +6,3 @@ transfer_out:
   kind: payment
 transfer_in:
   kind: transfer
-
-loan_payment_out:
-  kind: loan_payment
-loan_payment_in:
-  kind: funds_movement
-
-investment_contribution_out:
-  kind: investment_contribution
-investment_contribution_in:
-  kind: funds_movement
-
-investment_rollover_out:
-  kind: funds_movement
-investment_rollover_in:
-  kind: funds_movement
-
-cc_payment_out:
-  kind: cc_payment
-cc_payment_in:
-  kind: funds_movement
