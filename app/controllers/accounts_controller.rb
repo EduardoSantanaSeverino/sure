@@ -1,7 +1,7 @@
 class AccountsController < ApplicationController
   include StreamExtensions
 
-  before_action :set_account, only: %i[show sparkline sync set_default remove_default]
+  before_action :set_account, only: %i[show sparkline sync set_default remove_default reorder_activity]
   before_action :set_manageable_account, only: %i[toggle_active toggle_exclude_from_reports destroy unlink confirm_unlink select_provider]
   include Periodable
 
@@ -92,7 +92,11 @@ class AccountsController < ApplicationController
       txn_entry_ids = Transaction::Search.new(Current.family, filters: @q.slice("categories", "merchants", "tags", "types").to_h, accessible_account_ids: [ @account.id ]).transactions_scope.pluck("entries.id")
       entries = entries.where(id: txn_entry_ids)
     end
-    entries = entries.reverse_chronological.includes(:entryable)
+    # Manual intra-day positions only take effect in the compact activity
+    # view — every other consumer (regular table, reports, exports) keeps the
+    # legacy created_at/id order.
+    ordered_entries = compact_activity_view? ? entries.reverse_chronological_with_manual : entries.reverse_chronological
+    entries = ordered_entries.includes(:entryable)
     if statement_tab_active?
       build_statement_tab_data
       return render_statement_tab_frame if statement_tab_frame_request?
@@ -121,7 +125,7 @@ class AccountsController < ApplicationController
       params: request.query_parameters.except("tab").merge("tab" => "activity")
     )
 
-    @compact_view = Current.user.preview_features_enabled? && Current.user.transactions_compact?
+    @compact_view = compact_activity_view?
     @group_by_date = Current.user.transactions_group_by_date?
 
     # Preload transfer associations only for Transaction entries
@@ -189,6 +193,41 @@ class AccountsController < ApplicationController
     if @compact_view && !@group_by_date && @entries.any?
       @running_balances = Account::RunningBalanceCalculator.new(@entries + @split_parents.values).running_balances
     end
+  end
+
+  # Persists a manual intra-day order for the compact activity view. Receives
+  # the day's reorderable units top-to-bottom as displayed and stores walk
+  # order (earliest first) in `entries.manual_position`, scoped to this
+  # account and date. Split families move as one unit when the feed groups
+  # them; valuations are pinned and silently skipped.
+  #
+  # Responds with a turbo-stream that replaces just that day's rows (with
+  # refreshed running balances). Only the day's intermediates can change —
+  # same-day reordering never alters the day-end total, so later days need
+  # no refresh.
+  def reorder_activity
+    date = parse_reorder_date(params[:date])
+    keys = Array(params.permit(entry_ids: [])[:entry_ids]).map(&:to_s).uniq
+    grouped = ActiveModel::Type::Boolean.new.cast(params[:grouped])
+
+    if date.nil? || keys.empty?
+      return head :unprocessable_entity
+    end
+
+    day_scope = @account.entries.where(date: date)
+    # NOTE: where(id:) does not preserve the submitted order — re-sequence
+    # by the submitted keys so display order maps exactly to walk order.
+    by_id = day_scope.where(id: keys).where.not(entryable_type: "Valuation").to_a.index_by { |e| e.id.to_s }
+    submitted = keys.filter_map { |key| by_id[key] }
+    if submitted.empty?
+      return head :unprocessable_entity
+    end
+
+    Entry.transaction do
+      assign_day_positions(day_scope, submitted, grouped: grouped)
+    end
+
+    render_reordered_day(date, submitted.map(&:id), grouped: grouped)
   end
 
   def sync
@@ -391,6 +430,119 @@ class AccountsController < ApplicationController
       items.select do |item|
         Current.user.admin? ||
           (item.respond_to?(:accounts) && (item.accounts.map(&:id) & @accessible_account_ids).any?)
+      end
+    end
+
+    def compact_activity_view?
+      Current.user.preview_features_enabled? && Current.user.transactions_compact?
+    end
+
+    def parse_reorder_date(value)
+      Date.iso8601(value.to_s)
+    rescue Date::Error, TypeError
+      nil
+    end
+
+    # Renumbers every reorderable unit of the day densely from walk-early to
+    # walk-late. Units not included in the submission (e.g. a day split
+    # across pages) keep their existing relative order first; submitted
+    # units follow in submitted walk order. Members of a split family share
+    # one position so they can never be separated by the renumbering.
+    def assign_day_positions(day_scope, submitted, grouped:)
+      submitted_ids = submitted.map(&:id).to_set
+      submitted_units = reorder_units(submitted, grouped: grouped)
+      untouched = day_scope.where.not(entryable_type: "Valuation").where.not(id: submitted_ids)
+        .chronological_with_manual.to_a
+      untouched_units = reorder_units(untouched, grouped: grouped)
+
+      position = 0
+      (untouched_units + submitted_units.reverse).each do |members|
+        Entry.where(id: members.map(&:id)).update_all(manual_position: position)
+        position += 1
+      end
+    end
+
+    # Groups entries into reorder units: split families stay together when
+    # the feed renders them grouped, otherwise every entry stands alone.
+    # Children never form their own unit in grouped mode — they ride with
+    # their parent, and a stray submitted child key is ignored.
+    def reorder_units(entries, grouped:)
+      units = []
+      seen = Set.new
+
+      entries.each do |entry|
+        next if seen.include?(entry.id)
+        next if grouped && entry.split_child?
+
+        members = [ entry ]
+        if grouped && entry.split_parent?
+          members.concat(Entry.where(parent_entry_id: entry.id, date: entry.date).where.not(id: seen.to_a).to_a)
+        end
+
+        members.each { |m| seen.add(m.id) }
+        units << members
+      end
+
+      units
+    end
+
+    def reorder_context(date, grouped:)
+      { date: date.iso8601, url: reorder_activity_account_path(@account), grouped: grouped }
+    end
+
+    # Re-renders just the reordered day: fresh order, split parents and
+    # running balances for exactly the rows the client displayed. Later
+    # days need no refresh — same-day reordering never changes the
+    # day-end total the running walk carries forward.
+    def render_reordered_day(date, visible_ids, grouped:)
+      day_entries = @account.entries.where(date: date, id: visible_ids)
+        .reverse_chronological_with_manual.includes(:entryable).to_a
+
+      txn_entryables = day_entries.filter_map { |e| e.entryable if e.entryable_type == "Transaction" }
+      ActiveRecord::Associations::Preloader.new(
+        records: txn_entryables,
+        associations: {
+          transfer_as_outflow: { inflow_transaction: { entry: :account } },
+          transfer_as_inflow: { outflow_transaction: { entry: :account } }
+        }
+      ).call
+
+      transactions = day_entries.filter_map { |e| e.entryable if e.transaction? }
+      if transactions.any?
+        ActiveRecord::Associations::Preloader.new(
+          records: transactions,
+          associations: [ :transfer_as_inflow, :transfer_as_outflow, :category, :merchant ]
+        ).call
+      end
+
+      split_parents = {}
+      if grouped
+        parent_ids = day_entries.filter_map(&:parent_entry_id).uniq
+        if parent_ids.any?
+          split_parents = Entry.where(id: parent_ids)
+            .includes(:account, entryable: [ :category, :merchant ])
+            .index_by(&:id)
+        end
+      end
+
+      running_balances = Account::RunningBalanceCalculator.new(day_entries + split_parents.values).running_balances
+
+      respond_to do |format|
+        format.turbo_stream do
+          render turbo_stream: turbo_stream.replace(
+            "activity_day_#{date.iso8601}",
+            partial: "accounts/activity_day",
+            locals: {
+              day_entries: day_entries,
+              split_parents: split_parents,
+              running_balances: running_balances,
+              split_grouped: grouped,
+              filtered: false,
+              reorder: reorder_context(date, grouped: grouped)
+            }
+          )
+        end
+        format.html { redirect_to account_path(@account) }
       end
     end
 

@@ -1,6 +1,20 @@
 module EntriesHelper
   SplitGroup = Data.define(:parent, :children)
 
+  # Drag handle for manual intra-day ordering in the compact activity view.
+  # The handle is the HTML5 drag source; the activity-reorder Stimulus
+  # controller (on the day container) owns the drop targets and persistence.
+  def reorder_grip
+    tag.span(
+      icon("grip-vertical", size: "sm"),
+      draggable: true,
+      class: "cursor-grab text-secondary/60 hover:text-secondary",
+      title: t("accounts.show.activity.reorder_row"),
+      aria: { label: t("accounts.show.activity.reorder_row") },
+      data: { action: "dragstart->activity-reorder#dragUnit dragend->activity-reorder#releaseUnit" }
+    )
+  end
+
   def group_split_entries(entries, split_parents)
     return entries if split_parents.blank?
 

@@ -84,13 +84,18 @@ class Account::RunningBalanceCalculator
       # last requested date (split children always share their parent's date,
       # per validation), so a deep page of old entries doesn't force a walk
       # through the account's entire subsequent history.
+      #
+      # The walk honors manual intra-day positions (see
+      # Entry.chronological_with_manual): with no manual positions the order
+      # is identical to the legacy chronological walk, so display and math
+      # can never diverge.
       requested_ids = account_entries.map(&:id).to_set
 
       account.entries
         .excluding_pending
         .excluding_split_parents
         .where(date: min_date..max_date)
-        .chronological
+        .chronological_with_manual
         .includes(:entryable)
         .each do |entry|
           break if entry.date > max_date

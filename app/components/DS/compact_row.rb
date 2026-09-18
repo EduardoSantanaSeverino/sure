@@ -6,6 +6,7 @@ class DS::CompactRow < DesignSystemComponent
   #
   #   <%= render DS::CompactRow.new(show_date: has_running_balance, show_balance: show_balance) do |row| %>
   #     <% row.with_checkbox { check_box_tag(...) } %>
+  #     <% row.with_grip { grip_handle } %> (optional; fixed-width drag cell)
   #     <% row.with_date { format_date(entry.date) } %>
   #     <% row.with_primary { ... } %>
   #     <% row.with_notes { ... } %>
@@ -13,7 +14,11 @@ class DS::CompactRow < DesignSystemComponent
   #     <% row.with_amount { ... } %>
   #     <% row.with_balance { format_money(running_balance) } %>
   #   <% end %>
+  #
+  # The grip cell renders only when with_grip is given (pass an empty block
+  # for an alignment spacer), so existing rows are byte-for-byte unchanged.
   renders_one :checkbox
+  renders_one :grip
   renders_one :date
   renders_one :primary
   renders_one :notes
@@ -40,6 +45,11 @@ class DS::CompactRow < DesignSystemComponent
 
   erb_template <<~ERB
     <div class="<%= row_classes %>">
+      <% if grip? %>
+        <div class="w-6 shrink-0 flex justify-center">
+          <%= grip %>
+        </div>
+      <% end %>
       <div class="hidden lg:flex w-8 shrink-0 justify-center">
         <%= checkbox %>
       </div>

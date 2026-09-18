@@ -1,4 +1,4 @@
-<%# locals: (entry:, balance_trend: nil, view_ctx: "account", is_filtered: false, in_split_group: false, running_balance: nil, hide_balance: false, flat: false) %>
+<%# locals: (entry:, balance_trend: nil, view_ctx: "account", is_filtered: false, in_split_group: false, running_balance: nil, hide_balance: false, flat: false, grip_handle: false, grip_spacer: false) %>
 <% trade = entry.entryable %>
 <% has_running_balance = defined?(running_balance) && running_balance.present? %>
 <% show_date = flat || has_running_balance %>
@@ -17,6 +17,12 @@
               action: "bulk-select#toggleRowSelection",
               checkbox_toggle_target: "selectionEntry"
             } %>
+      <% end %>
+
+      <% if grip_handle %>
+        <% row.with_grip { reorder_grip } %>
+      <% elsif grip_spacer %>
+        <% row.with_grip { "" } %>
       <% end %>
 
       <% if show_date %>
