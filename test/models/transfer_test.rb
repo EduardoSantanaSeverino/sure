@@ -157,6 +157,31 @@ class TransferTest < ActiveSupport::TestCase
     assert_equal "funds_movement", Transfer.kind_for_account(accounts(:depository))
   end
 
+  test "categorizable? returns true for loan payment" do
+    transfer = create_kind_transfer(accounts(:depository), accounts(:loan))
+    assert transfer.categorizable?
+  end
+
+  test "categorizable? returns true for investment contribution" do
+    transfer = create_kind_transfer(accounts(:depository), accounts(:investment))
+    assert transfer.categorizable?
+  end
+
+  test "categorizable? returns false for investment to investment rollover" do
+    transfer = create_kind_transfer(accounts(:investment), accounts(:crypto))
+    assert_not transfer.categorizable?
+  end
+
+  test "categorizable? returns false for regular transfer" do
+    transfer = transfers(:one)
+    assert_not transfer.categorizable?
+  end
+
+  test "categorizable? returns false for credit card payment" do
+    transfer = create_kind_transfer(accounts(:depository), accounts(:credit_card))
+    assert_not transfer.categorizable?
+  end
+
   test "has_source_fee? returns true when source fee present" do
     transfer = transfers(:one)
     entry = accounts(:depository).entries.create!(name: "Fee", date: Date.current, amount: 5, currency: "USD", entryable: Transaction.new(kind: "standard"))
@@ -185,4 +210,15 @@ class TransferTest < ActiveSupport::TestCase
     transfer.fee_transactions << entry1.entryable << entry2.entryable
     assert_equal 5, transfer.total_fee
   end
+
+  private
+    def create_kind_transfer(source_account, destination_account)
+      Transfer::Creator.new(
+        family: families(:dylan_family),
+        source_account_id: source_account.id,
+        destination_account_id: destination_account.id,
+        date: Date.current,
+        amount: 100
+      ).create
+    end
 end

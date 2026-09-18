@@ -92,7 +92,13 @@ class Transfer < ApplicationRecord
   end
 
   def categorizable?
-    to_account&.accountable_type == "Loan"
+    return false unless to_account
+
+    is_loan = to_account.loan?
+    is_investment_contribution = (to_account.investment? || to_account.crypto?) &&
+                                  !(from_account&.investment? || from_account&.crypto?)
+
+    is_loan || is_investment_contribution
   end
 
   def reject!
