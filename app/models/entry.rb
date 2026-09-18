@@ -58,6 +58,28 @@ class Entry < ApplicationRecord
     )
   }
 
+  # Manual intra-day ordering variants of the chronological scopes, used only
+  # by the compact account activity view (display) and the running-balance
+  # walk (math) so the two can never diverge. `manual_position` is NULL
+  # unless the user explicitly reordered that day, and NULLs sort after
+  # positioned rows while falling back to created_at/id among themselves —
+  # so with no manual positions these scopes produce exactly the legacy
+  # order. Valuations stay pinned (last chronologically, first on display)
+  # because they reset the running total and must not sit mid-flow.
+  scope :chronological_with_manual, -> {
+    order(date: :asc)
+      .order(Arel.sql("CASE WHEN entries.entryable_type = 'Valuation' THEN 1 ELSE 0 END ASC"))
+      .order(Arel.sql("entries.manual_position ASC NULLS LAST"))
+      .order(created_at: :asc, id: :asc)
+  }
+
+  scope :reverse_chronological_with_manual, -> {
+    order(date: :desc)
+      .order(Arel.sql("CASE WHEN entries.entryable_type = 'Valuation' THEN 1 ELSE 0 END DESC"))
+      .order(Arel.sql("entries.manual_position DESC NULLS FIRST"))
+      .order(created_at: :desc, id: :desc)
+  }
+
   # Reconciliation scopes - see AddReconciliationToEntries
   scope :reconciled, -> { where.not(reconciled_at: nil) }
   scope :unreconciled, -> { where(reconciled_at: nil) }

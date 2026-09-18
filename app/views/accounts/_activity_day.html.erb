@@ -1,0 +1,81 @@
+<%# Per-day rows for the flat compact activity view (no date headers — the
+    date prints per row). When `reorder` is present, the day becomes a drag
+    container scoped to that date: reorderable rows are drag units keyed by
+    entry id (split families by parent id), valuations render a spacer and
+    stay pinned. Rendered both by the activity feed and by
+    AccountsController#reorder_activity (same partial, so the stream
+    replacement can never drift from the feed).
+    locals: (day_entries:, split_parents: {}, running_balances: {},
+             split_grouped: true, filtered: false, reorder: nil) %>
+<% reorder_enabled = reorder.present? %>
+<% day_key = day_entries.first&.date&.iso8601 %>
+<div id="activity_day_<%= day_key %>"
+  <% if reorder_enabled %>
+    data-controller="activity-reorder"
+    data-activity-reorder-url-value="<%= reorder[:url] %>"
+    data-activity-reorder-date-value="<%= reorder[:date] %>"
+    data-activity-reorder-grouped-value="<%= reorder[:grouped] %>"
+    data-action="dragover->activity-reorder#dragOver drop->activity-reorder#dropUnit"
+  <% end %>>
+  <% if split_grouped %>
+    <% group_split_entries(day_entries, split_parents).each do |item| %>
+      <% if item.is_a?(EntriesHelper::SplitGroup) %>
+        <div class="split-group"
+          <% if reorder_enabled %>
+            data-activity-reorder-target="unit" data-reorder-key="<%= item.parent.id %>"
+          <% end %>>
+          <%= render "transactions/compact_split_parent_row", entry: item.parent, view_ctx: "account", is_filtered: filtered, running_balance: running_balances[item.parent.id], hide_balance: filtered, flat: true, grip_handle: reorder_enabled %>
+          <% item.children.each do |child_entry| %>
+            <% if child_entry.entryable_type == "Transaction" %>
+              <%= render "transactions/compact_transaction", entry: child_entry, view_ctx: "account", in_split_group: true, running_balance: running_balances[child_entry.id], hide_balance: filtered, is_filtered: filtered, flat: true %>
+            <% elsif child_entry.entryable_type == "Trade" %>
+              <%= render "trades/compact_trade", entry: child_entry, view_ctx: "account", in_split_group: false, running_balance: running_balances[child_entry.id], hide_balance: filtered, is_filtered: filtered, flat: true %>
+            <% elsif child_entry.entryable_type == "Valuation" %>
+              <%= render "valuations/compact_valuation", entry: child_entry, running_balance: running_balances[child_entry.id], hide_balance: filtered, flat: true, grip_spacer: reorder_enabled %>
+            <% else %>
+              <%= render child_entry, view_ctx: "account", is_filtered: filtered %>
+            <% end %>
+          <% end %>
+        </div>
+      <% else %>
+        <% if item.entryable_type == "Valuation" %>
+          <%= render "valuations/compact_valuation", entry: item, running_balance: running_balances[item.id], hide_balance: filtered, flat: true, grip_spacer: reorder_enabled %>
+        <% else %>
+          <% if reorder_enabled %>
+            <div data-activity-reorder-target="unit" data-reorder-key="<%= item.id %>">
+          <% end %>
+          <% if item.entryable_type == "Transaction" %>
+            <%= render "transactions/compact_transaction", entry: item, view_ctx: "account", in_split_group: false, running_balance: running_balances[item.id], hide_balance: filtered, is_filtered: filtered, flat: true, grip_handle: reorder_enabled %>
+          <% elsif item.entryable_type == "Trade" %>
+            <%= render "trades/compact_trade", entry: item, view_ctx: "account", in_split_group: false, running_balance: running_balances[item.id], hide_balance: filtered, is_filtered: filtered, flat: true, grip_handle: reorder_enabled %>
+          <% else %>
+            <%= render item, view_ctx: "account", is_filtered: filtered %>
+          <% end %>
+          <% if reorder_enabled %>
+            </div>
+          <% end %>
+        <% end %>
+      <% end %>
+    <% end %>
+  <% else %>
+    <% day_entries.each do |entry| %>
+      <% if entry.entryable_type == "Valuation" %>
+        <%= render "valuations/compact_valuation", entry: entry, running_balance: running_balances[entry.id], hide_balance: filtered, flat: true, grip_spacer: reorder_enabled %>
+      <% else %>
+        <% if reorder_enabled %>
+          <div data-activity-reorder-target="unit" data-reorder-key="<%= entry.id %>">
+        <% end %>
+        <% if entry.entryable_type == "Transaction" %>
+          <%= render "transactions/compact_transaction", entry: entry, view_ctx: "account", in_split_group: false, running_balance: running_balances[entry.id], hide_balance: filtered, is_filtered: filtered, flat: true, grip_handle: reorder_enabled %>
+        <% elsif entry.entryable_type == "Trade" %>
+          <%= render "trades/compact_trade", entry: entry, view_ctx: "account", in_split_group: false, running_balance: running_balances[entry.id], hide_balance: filtered, is_filtered: filtered, flat: true, grip_handle: reorder_enabled %>
+        <% else %>
+          <%= render entry, view_ctx: "account", is_filtered: filtered %>
+        <% end %>
+        <% if reorder_enabled %>
+          </div>
+        <% end %>
+      <% end %>
+    <% end %>
+  <% end %>
+</div>

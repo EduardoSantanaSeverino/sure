@@ -663,6 +663,7 @@ Rails.application.routes.draw do
       patch :toggle_exclude_from_reports
       patch :set_default
       patch :remove_default
+      patch :reorder_activity
       get :select_provider
       get :confirm_unlink
       delete :unlink

@@ -1,4 +1,4 @@
-<%# locals: (entry:, running_balance: nil, hide_balance: false, flat: false) %>
+<%# locals: (entry:, running_balance: nil, hide_balance: false, flat: false, grip_spacer: false) %>
 <% valuation = entry.entryable %>
 <% has_running_balance = defined?(running_balance) && running_balance.present? %>
 <% show_date = flat || has_running_balance %>
@@ -10,6 +10,10 @@
         <%= check_box_tag dom_id(entry, "selection"),
             class: "checkbox checkbox--light",
             data: { id: entry.id, entry_type: entry.entryable_type, "bulk-select-target": "row", action: "bulk-select#toggleRowSelection", checkbox_toggle_target: "selectionEntry" } %>
+      <% end %>
+
+      <% if grip_spacer %>
+        <% row.with_grip { "" } %>
       <% end %>
 
       <% if show_date %>

@@ -102,6 +102,7 @@ en:
         new_transfer: New transfer
         no_entries: No entries found
         pending: Pending
+        reorder_row: Drag to reorder within the day
         search:
           placeholder: Search entries by name
         search_placeholder: Search entries by name

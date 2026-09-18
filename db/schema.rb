@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_14_200000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_18_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pgcrypto"
@@ -692,6 +692,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_14_200000) do
     t.uuid "import_id"
     t.boolean "import_locked", default: false, null: false
     t.jsonb "locked_attributes", default: {}
+    t.integer "manual_position"
     t.string "name", null: false
     t.text "notes"
     t.uuid "parent_entry_id"
@@ -703,6 +704,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_14_200000) do
     t.boolean "user_modified", default: false, null: false
     t.index "lower((name)::text)", name: "index_entries_on_lower_name"
     t.index ["account_id", "date", "entryable_id"], name: "index_entries_on_investment_totals_lookup", where: "(((entryable_type)::text = 'Trade'::text) AND (excluded = false))"
+    t.index ["account_id", "date", "manual_position"], name: "index_entries_on_account_date_manual_position"
     t.index ["account_id", "date"], name: "index_entries_on_account_id_and_date"
     t.index ["account_id", "idempotency_key"], name: "index_entries_on_account_and_idempotency_key", unique: true, where: "(idempotency_key IS NOT NULL)"
     t.index ["account_id", "reconciled_at"], name: "index_entries_on_account_and_reconciled_at", where: "(reconciled_at IS NOT NULL)"
@@ -2177,7 +2179,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_14_200000) do
     t.index ["account_id"], name: "index_simplefin_accounts_on_account_id"
     t.index ["simplefin_item_id", "account_id"], name: "idx_unique_sfa_per_item_and_upstream", unique: true, where: "(account_id IS NOT NULL)"
     t.index ["simplefin_item_id"], name: "index_simplefin_accounts_on_simplefin_item_id"
-    t.check_constraint "balance_sign_override::text = ANY (ARRAY['credit'::character varying, 'debt'::character varying]::text[])", name: "chk_simplefin_accounts_balance_sign_override"
+    t.check_constraint "balance_sign_override::text = ANY (ARRAY['credit'::character varying::text, 'debt'::character varying::text])", name: "chk_simplefin_accounts_balance_sign_override"
   end
 
   create_table "simplefin_items", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
