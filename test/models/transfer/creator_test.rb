@@ -133,6 +133,38 @@ class Transfer::CreatorTest < ActiveSupport::TestCase
     assert_equal crypto_account.currency, inflow.entry.currency
   end
 
+  test "defaults to investment contributions for Canadian registered-account subtypes (TFSA, RRSP, FHSA)" do
+    # TFSA/RRSP/FHSA (and every other region-specific subtype in
+    # Investment::SUBTYPES) are just a `subtype` string on the single
+    # `Investment` accountable type - Transfer::Creator only ever checks
+    # `account.investment?`, which is subtype-agnostic. This test exercises
+    # that assumption directly for the Canadian subtypes rather than relying
+    # on it being true by construction.
+    %w[tfsa rrsp fhsa].each do |subtype|
+      destination = @family.accounts.create!(
+        name: "#{subtype.upcase} account",
+        balance: 1000,
+        currency: "USD",
+        accountable: Investment.new(subtype: subtype)
+      )
+
+      creator = Transfer::Creator.new(
+        family: @family,
+        source_account_id: @source_account.id,
+        destination_account_id: destination.id,
+        date: @date,
+        amount: @amount
+      )
+
+      transfer = creator.create
+
+      assert transfer.persisted?, "#{subtype}: transfer should save"
+      outflow = transfer.outflow_transaction
+      assert_equal "investment_contribution", outflow.kind, "#{subtype}: should classify as investment_contribution"
+      assert_equal @investment_category, outflow.category, "#{subtype}: should auto-assign Investment Contributions category"
+    end
+  end
+
   test "creates funds_movement for investment to investment transfer (rollover)" do
     # Rollover case: investment → investment should stay as funds_movement
     other_investment = @family.accounts.create!(name: "IRA", balance: 5000, currency: "USD", accountable: Investment.new)
