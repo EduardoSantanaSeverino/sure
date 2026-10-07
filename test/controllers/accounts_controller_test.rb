@@ -399,6 +399,34 @@ class AccountsControllerTest < ActionDispatch::IntegrationTest
     assert_not_equal running_balances[entry_1.id], running_balances[entry_2.id]
   end
 
+  test "unchanged page size does not write transaction preferences" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_per_page" => 50))
+    User.any_instance.expects(:update_transaction_preferences).never
+
+    get account_url(@account, per_page: 50)
+    assert_response :success
+
+    get transactions_url(per_page: 50)
+    assert_response :success
+  end
+
+  test "split child tooltips use a keyboard focusable drawer link" do
+    parent = create_transaction(account: @account, amount: 100)
+    parent.split!([ { name: "First Part", amount: 60, category_id: nil }, { name: "Second Part", amount: 40, category_id: nil } ])
+    child = parent.child_entries.first
+
+    [ false, true ].each do |compact|
+      @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => compact, "show_split_grouped" => false))
+      get account_url(@account)
+
+      assert_response :success
+      assert_select "turbo-frame##{dom_id(child)} a[aria-label=?]", I18n.t("transactions.transaction.split_child_tooltip") do
+        assert_select "span[data-controller='DS--tooltip'] span[aria-describedby]"
+        assert_select "span[data-controller='DS--tooltip'] button", count: 0
+      end
+    end
+  end
+
   test "show filters entries by search term" do
     create_transaction(name: "Uniquely Named Coffee Shop", amount: 5, account: @account)
     create_transaction(name: "Grocery Store", amount: 40, account: @account)
@@ -430,6 +458,24 @@ class AccountsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_match "Big Amount Entry", response.body
     assert_no_match "Small Amount Entry", response.body
+  end
+
+  test "show filters account activity by automatic categorization" do
+    category = categories(:food_and_drink)
+    matching = create_transaction(name: "Automatically Categorized Target", account: @account)
+    matching.entryable.enrich_attribute(:category_id, category.id, source: "ai")
+    manual = create_transaction(name: "Manually Categorized Decoy", account: @account, category: category)
+    other_account = create_transaction(name: "Other Account AI Decoy", account: accounts(:credit_card))
+    other_account.entryable.enrich_attribute(:category_id, category.id, source: "ai")
+
+    [ { ai_status: [ "current" ] }, { ai_status: [ "current" ], categories: [ category.name ] } ].each do |filters|
+      get account_url(@account, q: filters)
+
+      assert_response :success
+      assert_select "turbo-frame##{dom_id(matching)}"
+      assert_select "turbo-frame##{dom_id(manual)}", count: 0
+      assert_select "turbo-frame##{dom_id(other_account)}", count: 0
+    end
   end
 
   test "show filters entries by category" do

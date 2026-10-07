@@ -99,8 +99,8 @@ class AccountsController < ApplicationController
     entries = EntrySearch.apply_status_filter(entries, @q[:status])
     entries = EntrySearch.apply_uncategorized_filter(entries, @q[:uncategorized])
     # Category / merchant / tag / type filters use Transaction::Search scoped to this account
-    if @q["categories"].present? || @q["merchants"].present? || @q["tags"].present? || @q["types"].present?
-      txn_entry_ids = Transaction::Search.new(Current.family, filters: @q.slice("categories", "merchants", "tags", "types").to_h.merge("active_accounts_only" => false), accessible_account_ids: [ @account.id ]).transactions_scope.pluck("entries.id")
+    if @q["categories"].present? || @q["merchants"].present? || @q["tags"].present? || @q["types"].present? || @q["ai_status"].present?
+      txn_entry_ids = Transaction::Search.new(Current.family, filters: @q.slice("categories", "merchants", "tags", "types", "ai_status").to_h.merge("active_accounts_only" => false), accessible_account_ids: [ @account.id ]).transactions_scope.select("entries.id")
       entries = entries.where(id: txn_entry_ids)
     end
     entries = entries.reverse_chronological.includes(:entryable)
@@ -128,7 +128,7 @@ class AccountsController < ApplicationController
     per_page = safe_per_page(effective_default)
     if params[:per_page].present?
       store_per_page!(per_page)
-      if Current.user.preview_features_enabled? && per_page.to_s == params[:per_page].to_s
+      if Current.user.preview_features_enabled? && per_page.to_s == params[:per_page].to_s && Current.user.transactions_per_page != per_page
         begin
           Current.user.update_transaction_preferences("transactions_per_page" => per_page)
         rescue ActiveRecord::ActiveRecordError => e

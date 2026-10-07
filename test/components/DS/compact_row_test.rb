@@ -1,6 +1,16 @@
 require "test_helper"
 
 class DS::CompactRowTest < ViewComponent::TestCase
+  test "exposes matching header and data cell semantics" do
+    [ false, true ].each do |header|
+      render_inline(DS::CompactRow.new(header: header, show_date: true, show_balance: true, show_notes: false)) do |row|
+        row.with_primary { "Coffee" }
+      end
+
+      assert_selector "[role='row'] > [role='#{header ? 'columnheader' : 'cell'}']", count: 6
+    end
+  end
+
   test "wraps row content in a single flex container" do
     render_inline(DS::CompactRow.new) do |row|
       row.with_primary { "Coffee" }
@@ -56,7 +66,7 @@ class DS::CompactRowTest < ViewComponent::TestCase
       row.with_primary { "Coffee" }
     end
 
-    assert_selector "span.text-secondary\\/40", text: "—", count: 2
+    assert_selector "span.text-secondary.opacity-40", text: "—", count: 2
   end
 
   test "shows the balance column only when show_balance is true" do
@@ -75,6 +85,6 @@ class DS::CompactRowTest < ViewComponent::TestCase
     end
 
     # Only the category placeholder remains; the notes column is gone.
-    assert_selector "span.text-secondary\\/40", text: "—", count: 1
+    assert_selector "span.text-secondary.opacity-40", text: "—", count: 1
   end
 end

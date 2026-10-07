@@ -32,13 +32,14 @@ class DS::CompactRow < DesignSystemComponent
   renders_one :amount
   renders_one :balance
 
-  def initialize(show_date: false, show_balance: false, show_notes: true, muted: false, indent: false, header: false, class: nil)
+  def initialize(show_date: false, show_balance: false, show_notes: true, muted: false, indent: false, header: false, data: {}, class: nil)
     @show_date = show_date
     @show_balance = show_balance
     @show_notes = show_notes
     @muted = muted
     @indent = indent
     @header = header
+    @data = data
     @extra_class = binding.local_variable_get(:class)
   end
 
@@ -53,6 +54,10 @@ class DS::CompactRow < DesignSystemComponent
     )
   end
 
+  def cell_role
+    @header ? "columnheader" : "cell"
+  end
+
   def checkbox_wrapper_classes
     class_names(
       "w-8 shrink-0 justify-center hidden lg:flex",
@@ -61,47 +66,47 @@ class DS::CompactRow < DesignSystemComponent
   end
 
   erb_template <<~ERB
-    <div class="<%= row_classes %>">
-      <div class="<%= checkbox_wrapper_classes %>">
+    <%= tag.div class: row_classes, data: @data, role: "row" do %>
+      <div role="<%= cell_role %>" class="<%= checkbox_wrapper_classes %>">
         <%= checkbox %>
       </div>
 
       <% if @show_date %>
-        <div class="hidden lg:flex w-[110px] shrink-0 text-secondary text-sm truncate pr-2"><%= date %></div>
+        <div role="<%= cell_role %>" class="hidden lg:flex w-28 shrink-0 text-secondary text-sm truncate pr-2"><%= date %></div>
       <% end %>
 
-      <div class="flex items-center gap-2 lg:gap-3 flex-[2] min-w-0 pr-2">
+      <div role="<%= cell_role %>" class="flex items-center gap-2 lg:gap-3 flex-[2] min-w-0 pr-2">
         <%= primary %>
       </div>
 
       <% if @show_notes %>
-        <div class="hidden lg:flex min-w-0 flex-[2] px-2">
+        <div role="<%= cell_role %>" class="hidden lg:flex min-w-0 flex-[2] px-2">
           <% if notes? %>
             <%= notes %>
           <% else %>
-            <span class="text-secondary/40 text-sm">—</span>
+            <span class="text-secondary opacity-40 text-sm">—</span>
           <% end %>
         </div>
       <% end %>
 
-      <div class="hidden md:flex min-w-0 items-center gap-1 flex-[1]">
+      <div role="<%= cell_role %>" class="hidden md:flex min-w-0 items-center gap-1 flex-[1]">
         <% if category? %>
           <%= category %>
         <% else %>
-          <span class="text-secondary/40 text-sm">—</span>
+          <span class="text-secondary opacity-40 text-sm">—</span>
         <% end %>
       </div>
 
-      <div class="w-[120px] shrink-0 flex items-center justify-end gap-2">
+      <div role="<%= cell_role %>" class="w-30 shrink-0 flex items-center justify-end gap-2">
         <%= amount %>
       </div>
 
       <% if @show_balance %>
-        <div class="hidden lg:flex w-[120px] shrink-0 justify-end px-2">
+        <div role="<%= cell_role %>" class="hidden lg:flex w-30 shrink-0 justify-end px-2">
           <%= balance %>
         </div>
       <% end %>
-    </div>
+    <% end %>
   ERB
 
   private

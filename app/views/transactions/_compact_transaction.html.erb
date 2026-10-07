@@ -14,7 +14,7 @@
 
 <%= turbo_frame_tag dom_id(entry) do %>
   <%= turbo_frame_tag dom_id(transaction) do %>
-    <%= render DS::CompactRow.new(show_date: show_date, show_balance: show_balance, show_notes: show_notes, indent: in_split_group) do |row| %>
+    <%= render DS::CompactRow.new(show_date: show_date, show_balance: show_balance, show_notes: show_notes, indent: in_split_group, data: { controller: "clickable-row", action: "click->clickable-row#open" }) do |row| %>
       <% row.with_checkbox do %>
         <%= check_box_tag dom_id(entry, "selection"),
             disabled: transaction.transfer.present?,
@@ -42,7 +42,7 @@
                     <%= link_to(
                           entry.name,
                           transaction.transfer.present? ? transfer_path(transaction.transfer) : entry_path(entry, drawer_params),
-                          data: { turbo_frame: "drawer", turbo_prefetch: false },
+                          data: { turbo_frame: "drawer", turbo_prefetch: false, clickable_row_target: "link" },
                           class: "hover:underline truncate"
                         ) %>
                   <% end %>
@@ -51,53 +51,24 @@
                 <%= link_to(
                       entry.name,
                       in_split_group ? entry_path(entry, drawer_params.merge(grouped: true)) : entry_path(entry, drawer_params),
-                      data: { turbo_frame: "drawer", turbo_prefetch: false },
+                      data: { turbo_frame: "drawer", turbo_prefetch: false, clickable_row_target: "link" },
                       class: "hover:underline truncate"
                     ) %>
               <% end %>
             </div>
 
             <div class="flex items-center gap-1 shrink-0">
-              <% if transaction.pending? %>
-                <%= render DS::Pill.new(label: t("transactions.transaction.pending"), tone: :neutral, marker: false, icon: "clock", title: t("transactions.transaction.pending_tooltip")) %>
-              <% end %>
-              <% if transaction.has_potential_duplicate? %>
-                <%= render DS::Pill.new(label: transaction.low_confidence_duplicate? ? t("transactions.transaction.review_recommended") : t("transactions.transaction.possible_duplicate"), tone: transaction.low_confidence_duplicate? ? :neutral : :warning, marker: false, icon: transaction.low_confidence_duplicate? ? "help-circle" : "alert-triangle") %>
-              <% end %>
-              <% if @split_parent_entry_ids ? @split_parent_entry_ids.include?(entry.id) : entry.split_parent? %>
-                <%= render DS::Pill.new(label: t("transactions.transaction.split"), tone: :neutral, marker: false, icon: "split") %>
-              <% end %>
-              <% if entry.split_child? && !in_split_group %>
-                <%= render DS::Tooltip.new(text: t("transactions.transaction.split_child_tooltip"), icon: "corner-down-right", size: "sm") %>
-              <% end %>
-              <% if transaction.transfer.present? %>
-                <%= render "transactions/transfer_match", transaction: transaction %>
-              <% end %>
+              <%= render "transactions/badges", entry: entry, transaction: transaction, in_split_group: in_split_group, drawer_params: drawer_params %>
             </div>
           </div>
 
-          <div class="text-secondary text-xs font-normal">
-            <span class="lg:hidden shrink-0"><%= format_date(entry.date) %><%= " •" unless transaction.transfer? %></span>
-            <% unless transaction.transfer? %>
-              <% if transaction.merchant&.present? %>
-                <span class="hidden lg:inline truncate"><%= transaction.merchant.name %> • </span>
-              <% end %>
-              <% if view_ctx != "account" %>
-                <span class="text-secondary hidden lg:inline">
-                  <%= link_to entry.account.name,
-                      account_path(entry.account, tab: "transactions"),
-                      data: { turbo_frame: "_top" },
-                      class: "hover:underline" %>
-                </span>
-              <% end %>
-              <div class="flex min-w-0 items-center gap-1">
-                <%= render "categories/category_name_mobile", transaction: transaction %>
-                <% if transaction.merchant&.present? %>
-                  <span class="lg:hidden min-w-0 truncate">• <%= transaction.merchant.name %></span>
-                <% end %>
-              </div>
-            <% end %>
+          <div class="mt-1 hidden md:flex min-w-0 items-center gap-1" data-tag-fit-bounds="1">
+            <%= render "tags/menu", entry: entry, transaction: transaction, variant: :desktop %>
           </div>
+          <div class="md:hidden flex min-w-0 has-[[data-tag-empty]]:hidden">
+            <%= render "tags/menu", entry: entry, transaction: transaction, variant: :mobile %>
+          </div>
+          <%= render "transactions/subtitle", entry: entry, transaction: transaction, view_ctx: view_ctx, compact: true %>
         </div>
       <% end %>
 
@@ -131,7 +102,7 @@
           <% if running_balance.present? %>
             <span class="privacy-sensitive text-sm font-medium text-primary truncate" title="<%= format_money(running_balance) %>"><%= format_money(running_balance) %></span>
           <% else %>
-            <span class="text-secondary/40 text-sm" title="<%= t("transactions.show.balance_unavailable") %>">—</span>
+            <span class="text-secondary opacity-40 text-sm" title="<%= t("transactions.show.balance_unavailable") %>">—</span>
           <% end %>
         <% end %>
       <% end %>

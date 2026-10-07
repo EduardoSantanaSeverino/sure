@@ -1828,9 +1828,9 @@ end
     get transactions_url
 
     assert_response :success
-    # standard list header is grid-cols-12 px-5 py-3; compact flat is px-2 py-2 with w-[110px] date col
+    # standard list header is grid-cols-12 px-5 py-3; compact flat is px-2 py-2 with w-28 date col
     assert_select "div.grid-cols-12.bg-container-inset.rounded-xl.px-5.py-3", count: 1
-    assert_no_match(/w-\[110px\]/, response.body)
+    assert_no_match(/w-28/, response.body)
   end
 
   test "compact grouped list renders when preview enabled and compact true" do
@@ -1851,7 +1851,7 @@ end
     # DS::CompactRow(header: true) shell, so only the date column's presence
     # (flat-only) distinguishes them — not the wrapper's own classes.
     assert_select "div.bg-container-inset.rounded-xl.px-2.py-2", count: 1
-    assert_no_match(/w-\[110px\]/, response.body)
+    assert_no_match(/w-28/, response.body)
   end
 
   test "compact flat list renders when preview enabled and group_by_date disabled" do
@@ -1868,7 +1868,7 @@ end
 
     assert_response :success
     assert_select "div.bg-container-inset.rounded-xl.px-2.py-2", count: 1
-    assert_match(/w-\[110px\]/, response.body)
+    assert_match(/w-28/, response.body)
   end
 
   test "compact flat list renders each internal transfer once" do
@@ -1888,6 +1888,21 @@ end
     transfer.reload
     assert_includes rendered_ids, transfer.outflow_transaction.entry.id.to_s
     assert_not_includes rendered_ids, transfer.inflow_transaction.entry.id.to_s
+  end
+
+  test "compact transaction rows preserve tags one-time hints and row clicks" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true))
+    @entry.entryable.update!(kind: "one_time", tags: [ tags(:one) ])
+
+    get transactions_url
+
+    assert_response :success
+    assert_select "turbo-frame##{dom_id(@entry)} [data-controller='clickable-row'][data-action='click->clickable-row#open']" do
+      assert_select "a[data-clickable-row-target='link']"
+      assert_select "span.text-warning[title]"
+      assert_select "##{dom_id(@entry.entryable, 'tag_summary_desktop')}", text: /#{Regexp.escape(tags(:one).name)}/
+      assert_select "##{dom_id(@entry.entryable, 'tag_summary_mobile')}", text: /#{Regexp.escape(tags(:one).name)}/
+    end
   end
 
   test "compact list hides the notes column by default" do
