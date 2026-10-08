@@ -1925,6 +1925,32 @@ end
     end
   end
 
+  test "compact row shows merchant inline on the name line instead of the subtitle" do
+    family = families(:empty)
+    sign_in users(:empty)
+    @user = users(:empty)
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false))
+    family.accounts.each { |a| a.entries.delete_all }
+    account = family.accounts.create! name: "Test", balance: 0, currency: "USD", accountable: Depository.new
+    merchant = family.merchants.create!(name: "Amazon", color: "#fd7f6f")
+    create_transaction(account: account, name: "Coffee", merchant: merchant)
+
+    get transactions_url
+
+    assert_response :success
+    doc = Nokogiri::HTML::Document.parse(response.body)
+    frame = doc.css("turbo-frame[id^='entry_']").first
+    assert frame.present?, "Expected a rendered entry row"
+    name_box = frame.css("div.truncate").find { |div| div.at_css("a") }
+    assert name_box.present?, "Expected a name container with a link"
+    # "Merchant • " (bullet after) lives on the name line...
+    assert_match(/Amazon •/, name_box.text)
+    # ...not in the desktop subtitle (which keeps "• Merchant", bullet before, for mobile).
+    subtitle = frame.at_css("div.text-secondary.text-xs")
+    assert_no_match(/Amazon •/, subtitle.text)
+    assert_match(/• Amazon/, subtitle.text)
+  end
+
   test "compact list hides the notes column by default" do
     family = families(:empty)
     sign_in users(:empty)
@@ -1970,8 +1996,13 @@ end
     assert_response :success
     # No visible "Transfer • from → to" subtitle line under the name...
     assert_no_match(/Transfer •/, response.body)
-    # ...the from→to detail lives in the name tooltip instead.
+    # ...the from→to detail lives in the name tooltip instead, styled like
+    # the tag tooltips (surface card, not the dark inverse bubble).
     assert_match(/Transfer: From → To/, response.body)
+    doc = Nokogiri::HTML::Document.parse(response.body)
+    tooltip = doc.at_css("div.chart-tooltip[role='tooltip']")
+    assert tooltip.present?, "Expected the transfer tooltip panel with surface styling"
+    assert_match(/Transfer: From → To/, tooltip.text)
   end
 
   test "group_by_date toggle only affects compact view" do
@@ -2014,6 +2045,25 @@ end
     assert_response :success
     assert_select "select[name='per_page'] option[value='20'][selected]"
     assert_equal 20, css_select("turbo-frame[id^='entry_']").count
+  end
+
+  test "pagination per-page select uses the shared options with an accessible name" do
+    family = families(:empty)
+    sign_in users(:empty)
+    user = users(:empty)
+    user.update!(preferences: (user.preferences || {}).merge("preview_features_enabled" => false))
+    family.accounts.each { |a| a.entries.delete_all }
+    account = family.accounts.create! name: "Test", balance: 0, currency: "USD", accountable: Depository.new
+    create_transaction(account: account)
+
+    get transactions_url(per_page: 50)
+
+    assert_response :success
+    assert_select "select[name='per_page'][aria-label='#{I18n.t("shared.pagination.per_page")}']", count: 1
+    User::TRANSACTIONS_PER_PAGE_OPTIONS.each do |value|
+      assert_select "select[name='per_page'] option[value='#{value}']", count: 1
+    end
+    assert_select "select[name='per_page'] option[selected][value='50']", count: 1
   end
 
   test "restore redirect prefers preview per_page preference over stale session value" do
