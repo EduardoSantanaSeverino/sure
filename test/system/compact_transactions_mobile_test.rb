@@ -1,6 +1,8 @@
 require "application_system_test_case"
 
 class CompactTransactionsMobileTest < ApplicationSystemTestCase
+  include EntriesTestHelper
+
   DEFAULT_VIEWPORT_WIDTH = 2400
   DEFAULT_VIEWPORT_HEIGHT = 1400
 
@@ -34,6 +36,22 @@ class CompactTransactionsMobileTest < ApplicationSystemTestCase
     find("#toggle-checkboxes-button").click
 
     assert checkbox.visible?, "row checkbox should become visible after tapping the toggle button"
+  end
+
+  test "labels stay hidden in mobile-style rows" do
+    @entry.entryable.update!(tags: [ tags(:one) ])
+
+    [ 375, 1400 ].each do |width|
+      page.current_window.resize_to(width, 900)
+      [ transactions_url, account_url(accounts(:depository), tab: "activity") ].each do |url|
+        visit url
+        within "turbo-frame##{dom_id(@entry)}" do
+          assert_no_selector "##{dom_id(@entry.entryable, 'tag_summary_mobile')}"
+          assert_no_selector "##{dom_id(@entry.entryable, 'tag_summary_desktop')}"
+          assert_no_text tags(:one).name
+        end
+      end
+    end
   end
 
   test "toggling checkboxes on mobile reveals the row selection checkbox in flat (ungrouped) view" do
@@ -170,6 +188,8 @@ class CompactTransactionsMobileTest < ApplicationSystemTestCase
               columns,
               order: headers.map(header => header.textContent.trim().toLowerCase()),
               labelsCell: cells.indexOf(labels.closest('[role="cell"]')),
+              checkboxWidth: cells[0].getBoundingClientRect().width,
+              columnGap: parseFloat(getComputedStyle(row).columnGap),
               amountFits: amount.scrollWidth <= amount.clientWidth,
               rowHeight: row.getBoundingClientRect().height
             };
@@ -180,6 +200,9 @@ class CompactTransactionsMobileTest < ApplicationSystemTestCase
         columns.each_value { |column| assert_in_delta column["headerLeft"], column["left"], 1 }
         assert_equal layout["order"].index("category") + 1, layout["labelsCell"]
         assert_equal "labels", layout["order"][layout["labelsCell"]]
+        assert_in_delta 24, layout["checkboxWidth"], 1
+        assert_in_delta 96, columns["date"]["width"], 1
+        assert_in_delta 8, layout["columnGap"], 1
         assert_in_delta columns["amount"]["width"], columns["labels"]["width"], 1
         assert_in_delta 2.5, columns["transaction"]["width"].fdiv(columns["category"]["width"]), 0.05
         if show_notes
@@ -195,12 +218,59 @@ class CompactTransactionsMobileTest < ApplicationSystemTestCase
 
   test "transfer account information remains available on name hover" do
     page.current_window.resize_to(2400, 1200)
-    @entry.entryable.update!(kind: "funds_movement")
+    transfer = create_transfer(from_account: accounts(:depository), to_account: accounts(:credit_card), amount: 25)
+    transfer_entry = transfer.outflow_transaction.entry
     visit transactions_url
 
-    within "turbo-frame##{dom_id(@entry)}" do
+    within "turbo-frame##{dom_id(transfer_entry)}" do
       find('[data-clickable-row-target="link"]').hover
       assert_selector '[role="tooltip"]', text: accounts(:depository).name
+      assert_selector '[role="tooltip"]', text: accounts(:credit_card).name
+    end
+
+    tooltip_is_uncovered = page.evaluate_script(<<~JS, dom_id(transfer_entry))
+      ((id) => {
+        const tooltip = document.getElementById(id).querySelector('[role="tooltip"]');
+        const bounds = tooltip.getBoundingClientRect();
+        const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+        return tooltip.contains(hit);
+      })(arguments[0])
+    JS
+    assert tooltip_is_uncovered, "hover tooltip should be visible above the row"
+  end
+
+  test "filter popovers stay next to their buttons in both compact tables" do
+    [ 2400, 1400, 375 ].each do |width|
+      page.current_window.resize_to(width, 1200)
+
+      [ [ transactions_url, "#transaction-filters-button" ],
+        [ account_url(accounts(:depository), tab: "activity"), "#activity-status-filter-button" ] ].each do |url, selector|
+        visit url
+        find(selector).click
+        assert_selector "[data-DS--popover-target='content']:not(.hidden)"
+
+        geometry = page.evaluate_script(<<~JS, selector)
+          ((selector) => {
+            const button = document.querySelector(selector);
+            const panel = button.closest('[data-controller="DS--popover"]').querySelector('[data-DS--popover-target="content"]');
+            const b = button.getBoundingClientRect();
+            const p = panel.getBoundingClientRect();
+            return {
+              buttonTop: b.top, buttonBottom: b.bottom, buttonLeft: b.left, buttonRight: b.right,
+              panelTop: p.top, panelBottom: p.bottom, panelLeft: p.left, panelRight: p.right,
+              viewportWidth: window.innerWidth
+            };
+          })(arguments[0])
+        JS
+
+        vertical_gap = [ (geometry["panelTop"] - geometry["buttonBottom"]).abs,
+                         (geometry["buttonTop"] - geometry["panelBottom"]).abs ].min
+        assert_operator vertical_gap, :<=, 15, "filter panel should open immediately above or below its button"
+        assert_operator geometry["panelLeft"], :>=, -1
+        assert_operator geometry["panelRight"], :<=, geometry["viewportWidth"] + 1
+        assert_operator geometry["panelLeft"], :<=, geometry["buttonRight"]
+        assert_operator geometry["panelRight"], :>=, geometry["buttonLeft"]
+      end
     end
   end
 
@@ -213,9 +283,9 @@ class CompactTransactionsMobileTest < ApplicationSystemTestCase
     [ transactions_url, account_url(accounts(:depository), tab: "activity") ].each do |url|
       visit url
       within "turbo-frame##{dom_id(@entry)}" do
-        assert_no_selector "div.w-28"
+        assert_no_selector "div.w-24"
         assert_selector "#category_name_mobile_#{@entry.entryable_id}", text: categories(:food_and_drink).name
-        assert_selector "##{dom_id(@entry.entryable, 'tag_summary_mobile')}"
+        assert_no_selector "##{dom_id(@entry.entryable, 'tag_summary_mobile')}"
         assert_no_selector "##{dom_id(@entry.entryable, 'tag_summary_desktop')}"
         assert_no_selector "input[type='checkbox']"
         assert_no_text @entry.notes
@@ -268,7 +338,7 @@ class CompactTransactionsMobileTest < ApplicationSystemTestCase
             const rect = el.getBoundingClientRect();
             return rect.top + rect.height / 2;
           };
-          const date = row.querySelector('div.w-28');
+          const date = row.querySelector('div.w-24');
           return {
             height: row.getBoundingClientRect().height,
             nameCenter: center(row.querySelector('[data-clickable-row-target="link"]')),
@@ -288,7 +358,7 @@ class CompactTransactionsMobileTest < ApplicationSystemTestCase
         ((rootId, frameId) => {
           const root = document.getElementById(rootId);
           const up = (el) => el.textContent.trim().toUpperCase();
-          const dateCells = [...root.querySelectorAll('div.w-28')];
+          const dateCells = [...root.querySelectorAll('div.w-24')];
           const headerDate = dateCells.find((el) => up(el) === "DATE");
           const header = headerDate.closest("div.uppercase");
           const headerTxn = [...header.querySelectorAll("div")].find((el) => el.children.length === 0 && up(el) === "TRANSACTION");
