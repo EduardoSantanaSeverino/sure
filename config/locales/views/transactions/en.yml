@@ -61,7 +61,11 @@ en:
       updated: Transaction updated
     new:
       new_transaction: New transaction
+    transaction_category:
+      set_on_outflow: "The category belongs to the outgoing side of this transfer and can only be changed there"
     show:
+      category_set_on_hidden_outflow: "This is the incoming side of a transfer. Its category belongs to the outgoing side, on an account you cannot access, and can only be changed there."
+      category_set_on_outflow: "This is the incoming side of a transfer. Its category belongs to the outgoing side and can only be changed there, so budgets count it once."
       keep_both: No, keep both
       loan_payment: Loan Payment
       mark_recurring: Mark as Recurring
@@ -78,7 +82,7 @@ en:
       account_label: Account
       amount: Amount
       balance_unavailable: Balance not available yet
-      labels: Labels
+      labels: Tags
       transfer_tooltip: "%{type}: %{from_account} %{arrow} %{to_account}"
       transfer_tooltip_account_only: "%{type}: %{account}"
       category_label: Category
@@ -175,7 +179,8 @@ en:
       reject_match: Reject match
       transfer_confirmed: Transfer is confirmed
     transaction:
-      one_time_tooltip: "One-time %{type} (excluded from averages)"
+      one_time_income_tooltip: "One-time income (excluded from averages)"
+      one_time_expense_tooltip: "One-time expense (excluded from averages)"
       pending: Pending
       pending_tooltip: Pending transaction — may change when posted
       linked_with_provider: Linked with %{provider}
