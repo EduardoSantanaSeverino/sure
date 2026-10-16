@@ -6,6 +6,8 @@ class AccountsController < ApplicationController
   before_action :ensure_linked_account, only: %i[confirm_unlink unlink]
   include Periodable
 
+  helper_method :visible_card_accounts
+
   def index
     @accessible_account_ids = Current.user.accessible_accounts.pluck(:id)
     @manual_accounts = family.accounts
@@ -89,8 +91,21 @@ class AccountsController < ApplicationController
     # date beside a table shaded against another.
     @as_of = Date.current
     @accessible_account_ids = Current.user.accessible_accounts.pluck(:id).to_set
-    @q = params.fetch(:q, {}).permit(:search, :uncategorized, status: [])
-    entries = @account.entries.excluding_split_parents.search(@q).reverse_chronological.includes(:entryable)
+    @q = params.fetch(:q, {}).permit(:search, :uncategorized, :start_date, :end_date, :amount, :amount_operator, status: [], categories: [], merchants: [], tags: [], types: [], ai_status: [])
+    # Base entries for the account
+    entries = @account.entries.excluding_split_parents
+    # Search / date / amount / status / uncategorized via EntrySearch
+    entries = EntrySearch.apply_search_filter(entries, @q[:search])
+    entries = EntrySearch.apply_date_filters(entries, @q[:start_date], @q[:end_date])
+    entries = EntrySearch.apply_amount_filter(entries, @q[:amount], @q[:amount_operator])
+    entries = EntrySearch.apply_status_filter(entries, @q[:status])
+    entries = EntrySearch.apply_uncategorized_filter(entries, @q[:uncategorized])
+    # Category / merchant / tag / type filters use Transaction::Search scoped to this account
+    if @q["categories"].present? || @q["merchants"].present? || @q["tags"].present? || @q["types"].present? || @q["ai_status"].present?
+      txn_entry_ids = Transaction::Search.new(Current.family, filters: @q.slice("categories", "merchants", "tags", "types", "ai_status").to_h.merge("active_accounts_only" => false), accessible_account_ids: [ @account.id ]).transactions_scope.select("entries.id")
+      entries = entries.where(id: txn_entry_ids)
+    end
+    entries = entries.reverse_chronological.includes(:entryable)
     if statement_tab_active?
       build_statement_tab_data
       return render_statement_tab_frame if statement_tab_frame_request?
@@ -107,14 +122,31 @@ class AccountsController < ApplicationController
     @loan_projection = @account.loan.payoff_projection(as_of: @as_of) if @account.accountable.is_a?(Loan)
     @loan_chart = loan_payoff_chart(@account, as_of: @as_of, period: @period, projection: @loan_projection) if chart_card_requested?
 
-    per_page = safe_per_page(stored_per_page_default)
-    store_per_page!(per_page) if params[:per_page].present?
+    effective_default = if Current.user.preview_features_enabled? && Current.user.transactions_per_page.present?
+      Current.user.transactions_per_page
+    else
+      stored_per_page_default
+    end
+    per_page = safe_per_page(effective_default)
+    if params[:per_page].present?
+      store_per_page!(per_page)
+      if Current.user.preview_features_enabled? && per_page.to_s == params[:per_page].to_s && Current.user.transactions_per_page != per_page
+        begin
+          Current.user.update_transaction_preferences("transactions_per_page" => per_page)
+        rescue ActiveRecord::ActiveRecordError => e
+          Rails.logger.warn("Failed to persist transactions_per_page preference for user=#{Current.user.id}: #{e.class}: #{e.message}")
+        end
+      end
+    end
 
     @pagy, @entries = pagy(
       entries,
       limit: per_page,
       params: request.query_parameters.except("tab").merge("tab" => "activity")
     )
+
+    @compact_view = Current.user.preview_features_enabled? && Current.user.transactions_compact?
+    @group_by_date = Current.user.transactions_group_by_date?
 
     # Preload transfer associations only for Transaction entries
     txn_entryables = @entries.filter_map { |e| e.entryable if e.entryable_type == "Transaction" }
@@ -170,6 +202,18 @@ class AccountsController < ApplicationController
     end
 
     @activity_feed_data = Account::ActivityFeedData.new(@account, @entries, split_parents: @split_parents)
+
+    # Running balance per entry for flat compact view only (when not grouped by date).
+    # Walks entries forward per account (Account::RunningBalanceCalculator) so
+    # each row reflects the balance immediately after that specific transaction,
+    # rather than the day's closing balance shared by every entry on the same date.
+    # Investment/holdings accounts intentionally keep the coarser per-day figure
+    # (see the calculator's docs) since intra-day holdings value can't be
+    # attributed to a single trade.
+    @running_balances = {}
+    if @compact_view && !@group_by_date && @entries.any?
+      @running_balances = Account::RunningBalanceCalculator.new(@entries + @split_parents.values).running_balances
+    end
   end
 
   def sync
@@ -401,6 +445,16 @@ class AccountsController < ApplicationController
       end
     end
 
+    # The accounts a provider card on this page may list. A card is admitted
+    # by visible_provider_items as soon as ONE of its accounts is accessible,
+    # so it must not then render the rest (#3630). Admins see every account.
+    def visible_card_accounts(item)
+      return item.accounts if Current.user.admin?
+
+      @accessible_account_id_set ||= @accessible_account_ids.to_set
+      item.accounts.select { |account| @accessible_account_id_set.include?(account.id) }
+    end
+
     def visible_provider_items(items)
       accessible_ids = @accessible_account_ids.to_a
 
@@ -411,10 +465,8 @@ class AccountsController < ApplicationController
 
         # Ownership shows a member their own connection, importantly including
         # one just created that has not synced any accounts yet. It must not
-        # widen what they can see: the card renders the item's accounts
-        # unfiltered, and is re-rendered by a family-wide broadcast with no
-        # viewer, so an owner is shown the card only while every account on it
-        # is already accessible to them.
+        # widen what they can see, so an owner is shown the card only while
+        # every account on it is already accessible to them.
         if item.respond_to?(:owned_by?) && item.owned_by?(Current.user)
           next true if (account_ids - accessible_ids).empty?
         end

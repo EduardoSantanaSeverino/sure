@@ -1,4 +1,16 @@
 module TransactionsHelper
+  def transaction_transfer_subtitle(entry)
+    transaction = entry.entryable
+    label = transaction.loan_payment? ? t("transactions.show.loan_payment") : t("transactions.show.transfer")
+    accounts = entry.account.name
+    if transaction.transfer.present?
+      outflow = transaction.transfer_as_outflow.present?
+      counterpart = outflow ? transaction.transfer.to_account : transaction.transfer.from_account
+      accounts = "#{accounts} #{outflow ? '→' : '←'} #{counterpart.name}" if counterpart && @accessible_account_ids&.include?(counterpart.id)
+    end
+    "#{label} • #{accounts}"
+  end
+
   # @return [Array<Hash>] the filters offered above the transaction list, each
   #   with the key its partial is named for, a translated label and an icon
   def transaction_search_filters
@@ -11,8 +23,16 @@ module TransactionsHelper
       { key: "category_filter", label: t("transactions.search.filters.category"), icon: "shapes" },
       { key: "tag_filter", label: t("transactions.search.filters.tag"), icon: "tags" },
       { key: "merchant_filter", label: t("transactions.search.filters.merchant"), icon: "store" },
-      { key: "ai_filter", label: t("transactions.search.filters.ai"), icon: "sparkles" }
+      { key: "ai_filter", label: t("transactions.search.filters.ai"), icon: "sparkles" },
+      { key: "attachment_filter", label: t("transactions.search.filters.attachment"), icon: "paperclip" }
     ]
+  end
+
+  # @param label [String] a stored investment_activity_label such as "Sweep In"
+  # @return [String] its name in the current locale, or the label itself when
+  #   it has no translation
+  def investment_activity_label_name(label)
+    t("transactions.activity_labels.#{label.parameterize(separator: "_")}", default: label)
   end
 
   # @param filter [Hash] one entry from transaction_search_filters

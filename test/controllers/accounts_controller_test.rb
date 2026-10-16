@@ -112,6 +112,271 @@ class AccountsControllerTest < ActionDispatch::IntegrationTest
     unregister_fake_chain!
   end
 
+  # #3630. A provider card is admitted for a member as soon as ONE of its
+  # accounts is shared with them, so the card must list only the accounts this
+  # viewer may see. The unshared account is renamed to something no other part
+  # of the page can print, so its absence proves the card filtered it.
+  test "a partially shared member sees only their account on a Plaid card" do
+    shared, unshared = link_two_accounts_to(plaid_items(:one)) do |item, index|
+      item.plaid_accounts.create!(
+        name: "Second Plaid Account", plaid_id: "acc_235_#{index}", plaid_type: "investment",
+        currency: "USD", current_balance: 10
+      )
+    end
+
+    sign_in users(:family_member)
+    get accounts_url
+
+    assert_response :success
+    assert_select "##{dom_id(plaid_items(:one))}"
+    assert_select "turbo-frame##{dom_id(shared)}", count: 1
+    assert_select "turbo-frame##{dom_id(unshared)}", count: 0
+    assert_not_includes response.body, unshared.name
+  end
+
+  test "an admin still sees every account on a Plaid card" do
+    shared, unshared = link_two_accounts_to(plaid_items(:one)) do |item, index|
+      item.plaid_accounts.create!(
+        name: "Second Plaid Account", plaid_id: "acc_235_#{index}", plaid_type: "investment",
+        currency: "USD", current_balance: 10
+      )
+    end
+
+    get accounts_url
+
+    assert_response :success
+    assert_select "turbo-frame##{dom_id(shared)}", count: 1
+    assert_select "turbo-frame##{dom_id(unshared)}", count: 1
+  end
+
+  test "a partially shared member sees only their account on a SimpleFIN card" do
+    item = SimplefinItem.create!(family: families(:dylan_family), name: "Conn 235", access_url: "https://example.com/access")
+    shared, unshared = link_two_accounts_to(item) do |sf_item, index|
+      sf_item.simplefin_accounts.create!(
+        name: "SF #{index}", account_id: "sf_235_#{index}", currency: "USD",
+        current_balance: 1, account_type: "depository"
+      )
+    end
+
+    sign_in users(:family_member)
+    get accounts_url
+
+    assert_response :success
+    assert_select "##{dom_id(item)}"
+    assert_select "turbo-frame##{dom_id(shared)}", count: 1
+    assert_select "turbo-frame##{dom_id(unshared)}", count: 0
+    assert_not_includes response.body, unshared.name
+  end
+
+  # The card's other name-bearing lists. The sync summary's detail rows come
+  # from the connection's last sync and name the accounts and transactions
+  # involved, so they follow the same rule as the account list: shown only to
+  # a viewer who can see every account on the connection. Counts stay.
+  test "a partially shared member does not see account names in a card's sync summary" do
+    item = plaid_items(:one)
+    _shared, unshared = link_two_accounts_to(item) do |p_item, index|
+      p_item.plaid_accounts.create!(
+        name: "Second Plaid Account", plaid_id: "acc_235_#{index}", plaid_type: "investment",
+        currency: "USD", current_balance: 10
+      )
+    end
+    item.syncs.create!(status: "completed", sync_stats: {
+      "tx_seen" => 1, "tx_skipped" => 1,
+      "skip_details" => [ { "name" => "Secret Txn 235", "reason" => "excluded", "account_name" => unshared.name } ],
+      "total_errors" => 1,
+      "errors" => [ { "name" => unshared.name, "message" => "Import failed 235" } ]
+    })
+
+    sign_in users(:family_member)
+    get accounts_url
+
+    assert_response :success
+    assert_not_includes response.body, unshared.name
+    assert_not_includes response.body, "Secret Txn 235"
+  end
+
+  test "an admin still sees the account names in a card's sync summary" do
+    item = plaid_items(:one)
+    link_two_accounts_to(item) do |p_item, index|
+      p_item.plaid_accounts.create!(
+        name: "Second Plaid Account", plaid_id: "acc_235_#{index}", plaid_type: "investment",
+        currency: "USD", current_balance: 10
+      )
+    end
+    item.syncs.create!(status: "completed", sync_stats: {
+      "tx_seen" => 1, "tx_skipped" => 1,
+      "skip_details" => [ { "name" => "Secret Txn 235", "reason" => "excluded", "account_name" => "x" } ]
+    })
+
+    get accounts_url
+
+    assert_response :success
+    assert_includes response.body, "Secret Txn 235"
+  end
+
+  test "a partially shared member does not see unshared names in SimpleFIN's stale-pending and replacement banners" do
+    item = SimplefinItem.create!(family: families(:dylan_family), name: "Conn 235", access_url: "https://example.com/access")
+    _shared, unshared = link_two_accounts_to(item) do |sf_item, index|
+      sf_item.simplefin_accounts.create!(
+        name: "SF #{index}", account_id: "sf_235_#{index}", currency: "USD",
+        current_balance: 1, account_type: "depository"
+      )
+    end
+    SimplefinItem.any_instance.stubs(:stale_pending_status)
+                 .returns({ count: 2, message: "2 pending", accounts: [ unshared.name ] })
+    item.syncs.create!(status: "completed", sync_stats: {
+      "replacement_suggestions" => [ {
+        "dormant_sfa_id" => item.simplefin_accounts.find_by!(account_id: "sf_235_1").id,
+        "active_sfa_id" => item.simplefin_accounts.find_by!(account_id: "sf_235_0").id,
+        "sure_account_id" => unshared.id
+      } ]
+    })
+
+    sign_in users(:family_member)
+    get accounts_url
+
+    assert_response :success
+    assert_select "##{dom_id(item)}"
+    assert_not_includes response.body, unshared.name
+  end
+
+  # The card header names the connected institution when there is only one.
+  # That institution is the unshared account's as much as the shared one's,
+  # so it follows the same rule as the other names on the card.
+  test "a partially shared member does not see the connection's institution name" do
+    item = SimplefinItem.create!(family: families(:dylan_family), name: "Conn 235", access_url: "https://example.com/access")
+    link_two_accounts_to(item) do |sf_item, index|
+      sf_item.simplefin_accounts.create!(
+        name: "SF #{index}", account_id: "sf_235_#{index}", currency: "USD",
+        current_balance: 1, account_type: "depository"
+      )
+    end
+    SimplefinItem.any_instance.stubs(:connected_institutions).returns([ { "name" => "Hidden Bank 235" } ])
+
+    sign_in users(:family_member)
+    get accounts_url
+
+    assert_response :success
+    assert_select "##{dom_id(item)}"
+    assert_not_includes response.body, "Hidden Bank 235"
+  end
+
+  test "an admin still sees the connection's institution name" do
+    item = SimplefinItem.create!(family: families(:dylan_family), name: "Conn 235", access_url: "https://example.com/access")
+    link_two_accounts_to(item) do |sf_item, index|
+      sf_item.simplefin_accounts.create!(
+        name: "SF #{index}", account_id: "sf_235_#{index}", currency: "USD",
+        current_balance: 1, account_type: "depository"
+      )
+    end
+    SimplefinItem.any_instance.stubs(:connected_institutions).returns([ { "name" => "Hidden Bank 235" } ])
+
+    get accounts_url
+
+    assert_response :success
+    assert_includes response.body, "Hidden Bank 235"
+  end
+
+  # The SnapTrade card's brokerage line is built from every
+  # account on the connection. With one brokerage it prints that brokerage's
+  # name, so a member shared only the nameless account would read the other's.
+  test "a partially shared member does not see a SnapTrade connection's brokerage" do
+    item = snaptrade_items(:configured_item)
+    # The fixture accounts name two brokerages, which makes the line a count.
+    # Cleared so the only brokerage left is the unshared account's.
+    item.snaptrade_accounts.update_all(brokerage_name: nil)
+    link_two_accounts_to(item) do |st_item, index|
+      st_item.snaptrade_accounts.create!(
+        name: "ST #{index}", snaptrade_account_id: "st_235_#{index}", currency: "USD",
+        current_balance: 1, brokerage_name: (index.zero? ? nil : "Hidden Broker 235")
+      )
+    end
+
+    sign_in users(:family_member)
+    get accounts_url
+
+    assert_response :success
+    assert_select "##{dom_id(item)}"
+    assert_not_includes response.body, "Hidden Broker 235"
+  end
+
+  test "an admin still sees a SnapTrade connection's brokerage" do
+    item = snaptrade_items(:configured_item)
+    # The fixture accounts name two brokerages, which makes the line a count.
+    # Cleared so the only brokerage left is the unshared account's.
+    item.snaptrade_accounts.update_all(brokerage_name: nil)
+    link_two_accounts_to(item) do |st_item, index|
+      st_item.snaptrade_accounts.create!(
+        name: "ST #{index}", snaptrade_account_id: "st_235_#{index}", currency: "USD",
+        current_balance: 1, brokerage_name: (index.zero? ? nil : "Hidden Broker 235")
+      )
+    end
+
+    get accounts_url
+
+    assert_response :success
+    assert_includes response.body, "Hidden Broker 235"
+  end
+
+  test "a partially shared member sees only their account on a Kraken card" do
+    item = kraken_items(:one)
+    shared, unshared = link_two_accounts_to(item) do |k_item, index|
+      k_item.kraken_accounts.create!(
+        name: "Kraken #{index}", account_id: "kraken_235_#{index}", account_type: "combined",
+        currency: "USD", current_balance: 1, extra: {}
+      )
+    end
+
+    sign_in users(:family_member)
+    get accounts_url
+
+    assert_response :success
+    assert_select "##{dom_id(item)}"
+    assert_select "turbo-frame##{dom_id(shared)}", count: 1
+    assert_select "turbo-frame##{dom_id(unshared)}", count: 0
+  end
+
+  test "a partially shared member does not see stale-rate warnings for an unshared Kraken account" do
+    item = kraken_items(:one)
+    shared, unshared = link_two_accounts_to(item) do |k_item, index|
+      k_item.kraken_accounts.create!(
+        name: "Kraken #{index}", account_id: "kraken_stale_#{index}", account_type: "combined",
+        currency: "USD", current_balance: 1,
+        extra: index.zero? ? {} : { "kraken" => { "stale_rate" => "true", "rate_target_date" => "2001-02-03" } }
+      )
+    end
+
+    sign_in users(:family_member)
+    get accounts_url
+    assert_response :success
+    assert_select "##{dom_id(item)}"
+    assert_not_includes response.body, "2001-02-03"
+
+    sign_in users(:family_admin)
+    get accounts_url
+    assert_includes response.body, "2001-02-03"
+  end
+
+  test "a partially shared member does not see a Trade Republic connection's data-quality totals" do
+    item = trade_republic_items(:configured_item)
+    # The fixture item already has one portfolio and one cash account, and
+    # the database allows one of each kind per connection.
+    link_two_accounts_to(item) do |_item, index|
+      trade_republic_accounts(index.zero? ? :main_account : :cash_account)
+    end
+    title = I18n.t("trade_republic_items.trade_republic_item.data_quality.title")
+
+    sign_in users(:family_member)
+    get accounts_url
+    assert_response :success
+    assert_select "##{dom_id(item)}"
+    assert_not_includes response.body, title
+
+    sign_in users(:family_admin)
+    get accounts_url
+    assert_includes response.body, title
+  end
+
   test "index renders trading212 items" do
     trading212_item = trading212_items(:configured_item)
     get accounts_url
@@ -236,7 +501,31 @@ class AccountsControllerTest < ActionDispatch::IntegrationTest
     drawer_link = row.at_css("a[data-clickable-row-target='link']")
 
     assert_equal "click->clickable-row#open", row["data-action"]
-    assert_equal entry_path(entry), drawer_link["href"]
+    assert_equal entry_path(entry, view_ctx: "account", is_filtered: false), drawer_link["href"]
+  end
+
+  test "compact account transfer links retain row context for drawer updates" do
+    @user.update!(preferences: (@user.preferences || {}).merge(
+      "preview_features_enabled" => true,
+      "transactions_compact" => true,
+      "transactions_group_by_date" => false
+    ))
+    transfer = transfers(:one)
+    transfer.outflow_transaction.update!(kind: "cc_payment")
+    entry = transfer.outflow_transaction.entry
+
+    get account_url(@account, tab: "activity")
+
+    assert_response :success
+    doc = Nokogiri::HTML::Document.parse(response.body)
+    drawer_link = doc.at_css("turbo-frame##{dom_id(entry)} a[data-clickable-row-target='link']")
+    assert_equal transfer_path(transfer, view_ctx: "account", is_filtered: false), drawer_link["href"]
+
+    get drawer_link["href"], headers: { "HTTP_REFERER" => transactions_url }
+
+    assert_response :success
+    assert_select "input[type='hidden'][name='view_ctx'][value='account']"
+    assert_select "input[type='hidden'][name='is_filtered'][value='0']"
   end
 
   test "show avoids N+1 split-parent queries across paginated entries" do
@@ -302,6 +591,256 @@ class AccountsControllerTest < ActionDispatch::IntegrationTest
       q.match?(/FROM "entries".*WHERE.*"entries"\."id" = \$?\d+/) && !q.include?(" IN (")
     }
     assert_equal 0, per_row_split_parent, "N+1 per-row split-parent lookups detected (#{per_row_split_parent})"
+  end
+
+  # --- Compact view: valuations, split groups, running balance, and filters ---
+
+  test "show renders valuations with the compact partial when compact and grouped by date" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => true))
+    create_valuation(account: @account, amount: 5000)
+
+    get account_url(@account)
+
+    assert_response :success
+    # compact_valuation renders a flex row; the full-size partial renders a grid-cols-12 row instead
+    assert_select "turbo-frame[id^='valuation_']"
+    assert_select "turbo-frame[id^='valuation_'] div.grid-cols-12", count: 0
+    # Whole-row click parity with the compact transaction row.
+    assert_select "turbo-frame[id^='valuation_'] div[data-controller='clickable-row']", minimum: 1
+    assert_select "turbo-frame[id^='valuation_'] a[data-clickable-row-target='link']", minimum: 1
+  end
+
+  test "show groups split parents into a single split-group row in the compact flat (ungrouped) view" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false, "show_split_grouped" => true))
+    entry = create_transaction(name: "Grocery Store", amount: 100, account: @account)
+    entry.split!([
+      { name: "Food", amount: 60 },
+      { name: "Household", amount: 40 }
+    ])
+
+    get account_url(@account)
+
+    assert_response :success
+    assert_select ".split-group", count: 1
+    # Split children should not render as orphaned rows outside the split-group wrapper
+    assert_select ".split-group [id^='entry_']", minimum: 1
+  end
+
+  test "show renders split children as flat rows in the compact flat view when grouping is disabled" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false, "show_split_grouped" => false))
+    entry = create_transaction(name: "Grocery Store", amount: 100, account: @account)
+    entry.split!([
+      { name: "Food", amount: 60 },
+      { name: "Household", amount: 40 }
+    ])
+
+    get account_url(@account)
+
+    assert_response :success
+    assert_select ".split-group", count: 0
+  end
+
+  test "show renders the split-parent row with the compact flex layout, not the legacy grid" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false, "show_split_grouped" => true))
+    entry = create_transaction(name: "Grocery Store", amount: 100, account: @account)
+    entry.split!([
+      { name: "Food", amount: 60 },
+      { name: "Household", amount: 40 }
+    ])
+
+    get account_url(@account)
+
+    assert_response :success
+    assert_select ".split-group", count: 1
+    # The split-parent row should use the same fixed-width flex shell as its
+    # compact siblings, not the old grid-cols-12 layout.
+    assert_select ".split-group div.grid-cols-12", count: 0
+    assert_select ".split-group .flex.items-center", minimum: 1
+  end
+
+  test "show computes running balances only for compact flat (ungrouped) view" do
+    @account.balances.where(date: Date.current).destroy_all
+    @account.balances.create!(date: Date.current, balance: 500, currency: @account.currency, start_balance: 500, end_balance: 500)
+    create_transaction(name: "Coffee", amount: 5, account: @account, date: Date.current)
+
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false))
+    get account_url(@account)
+    assert_response :success
+    assert @controller.instance_variable_get(:@running_balances).present?
+
+    @user.update!(preferences: (@user.preferences || {}).merge("transactions_group_by_date" => true))
+    get account_url(@account)
+    assert_response :success
+    assert_equal({}, @controller.instance_variable_get(:@running_balances))
+  end
+
+  test "show computes a distinct per-transaction running balance for same-day entries" do
+    @account.balances.where(date: Date.current - 1.day).destroy_all
+    @account.balances.create!(date: Date.current - 1.day, balance: 500, currency: @account.currency, start_balance: 500, end_balance: 500)
+
+    # Two same-day transactions should NOT both show the day's closing balance —
+    # each should reflect the balance immediately after that specific entry.
+    entry_1 = create_transaction(name: "Coffee", amount: 100, account: @account, date: Date.current, created_at: Time.current - 2.hours)
+    entry_2 = create_transaction(name: "Lunch", amount: -30, account: @account, date: Date.current, created_at: Time.current - 1.hour)
+
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false))
+    get account_url(@account)
+    assert_response :success
+
+    running_balances = @controller.instance_variable_get(:@running_balances)
+    assert_not_equal running_balances[entry_1.id], running_balances[entry_2.id]
+  end
+
+  test "unchanged page size does not write transaction preferences" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_per_page" => 50))
+    User.any_instance.expects(:update_transaction_preferences).never
+
+    get account_url(@account, per_page: 50)
+    assert_response :success
+
+    get transactions_url(per_page: 50)
+    assert_response :success
+  end
+
+  test "split child tooltips use a keyboard focusable drawer link" do
+    parent = create_transaction(account: @account, amount: 100)
+    parent.split!([ { name: "First Part", amount: 60, category_id: nil }, { name: "Second Part", amount: 40, category_id: nil } ])
+    child = parent.child_entries.first
+
+    [ false, true ].each do |compact|
+      @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => compact, "show_split_grouped" => false))
+      get account_url(@account)
+
+      assert_response :success
+      assert_select "turbo-frame##{dom_id(child)} a[aria-label=?]", I18n.t("transactions.transaction.split_child_tooltip") do
+        assert_select "span[data-controller='DS--tooltip'] span[aria-describedby]"
+        assert_select "span[data-controller='DS--tooltip'] button", count: 0
+      end
+    end
+  end
+
+  test "show filters entries by search term" do
+    create_transaction(name: "Uniquely Named Coffee Shop", amount: 5, account: @account)
+    create_transaction(name: "Grocery Store", amount: 40, account: @account)
+
+    get account_url(@account, q: { search: "Uniquely Named" })
+
+    assert_response :success
+    assert_match "Uniquely Named Coffee Shop", response.body
+    assert_no_match "Grocery Store", response.body
+  end
+
+  test "show filters entries by date range" do
+    in_range = create_transaction(name: "In Range Entry", amount: 10, account: @account, date: 5.days.ago.to_date)
+    out_of_range = create_transaction(name: "Out Of Range Entry", amount: 10, account: @account, date: 30.days.ago.to_date)
+
+    get account_url(@account, q: { start_date: 10.days.ago.to_date.to_s, end_date: Date.current.to_s })
+
+    assert_response :success
+    assert_match in_range.name, response.body
+    assert_no_match out_of_range.name, response.body
+  end
+
+  test "show filters entries by amount" do
+    create_transaction(name: "Small Amount Entry", amount: 5, account: @account)
+    create_transaction(name: "Big Amount Entry", amount: 500, account: @account)
+
+    get account_url(@account, q: { amount: "100", amount_operator: "greater" })
+
+    assert_response :success
+    assert_match "Big Amount Entry", response.body
+    assert_no_match "Small Amount Entry", response.body
+  end
+
+  test "show filters account activity by automatic categorization" do
+    category = categories(:food_and_drink)
+    matching = create_transaction(name: "Automatically Categorized Target", account: @account)
+    matching.entryable.enrich_attribute(:category_id, category.id, source: "ai")
+    manual = create_transaction(name: "Manually Categorized Decoy", account: @account, category: category)
+    other_account = create_transaction(name: "Other Account AI Decoy", account: accounts(:credit_card))
+    other_account.entryable.enrich_attribute(:category_id, category.id, source: "ai")
+
+    [ { ai_status: [ "current" ] }, { ai_status: [ "current" ], categories: [ category.name ] } ].each do |filters|
+      get account_url(@account, q: filters)
+
+      assert_response :success
+      assert_select "turbo-frame##{dom_id(matching)}"
+      assert_select "turbo-frame##{dom_id(manual)}", count: 0
+      assert_select "turbo-frame##{dom_id(other_account)}", count: 0
+    end
+  end
+
+  test "show filters entries by category" do
+    category = categories(:food_and_drink)
+    matching = create_transaction(name: "Categorized Entry", amount: 10, account: @account, category: category)
+    non_matching = create_transaction(name: "Uncategorized Entry", amount: 10, account: @account)
+
+    get account_url(@account, q: { categories: [ category.name ] })
+
+    assert_response :success
+    assert_match matching.name, response.body
+    assert_no_match non_matching.name, response.body
+  end
+
+  test "show filters entries by category on a disabled account" do
+    category = categories(:food_and_drink)
+    matching = create_transaction(name: "Disabled Categorized Entry", amount: 10, account: @account, category: category)
+    non_matching = create_transaction(name: "Disabled Uncategorized Entry", amount: 10, account: @account)
+    @account.disable!
+
+    get account_url(@account, q: { categories: [ category.name ] })
+
+    assert_response :success
+    assert_match matching.name, response.body
+    assert_no_match non_matching.name, response.body
+  end
+
+  test "show filters entries by status" do
+    confirmed = create_transaction(name: "Confirmed Status Entry", amount: 10, account: @account)
+    pending_entry = create_transaction(name: "Pending Status Entry", amount: 10, account: @account)
+    pending_entry.entryable.update!(extra: { "plaid" => { "pending" => true } })
+
+    get account_url(@account, q: { status: [ "confirmed" ] })
+
+    assert_response :success
+    assert_match confirmed.name, response.body
+    assert_no_match pending_entry.name, response.body
+  end
+
+  test "show filters entries by merchant" do
+    merchant = @account.family.merchants.create!(name: "Unique Test Merchant")
+    matching = create_transaction(name: "Merchant Filter Entry", amount: 10, account: @account, merchant: merchant)
+    non_matching = create_transaction(name: "No Merchant Filter Entry", amount: 10, account: @account)
+
+    get account_url(@account, q: { merchants: [ merchant.name ] })
+
+    assert_response :success
+    assert_match matching.name, response.body
+    assert_no_match non_matching.name, response.body
+  end
+
+  test "show filters entries by tag" do
+    tag = @account.family.tags.create!(name: "Unique Test Tag")
+    matching = create_transaction(name: "Tagged Filter Entry", amount: 10, account: @account)
+    matching.entryable.update!(tag_ids: [ tag.id ])
+    non_matching = create_transaction(name: "Untagged Filter Entry", amount: 10, account: @account)
+
+    get account_url(@account, q: { tags: [ tag.name ] })
+
+    assert_response :success
+    assert_match matching.name, response.body
+    assert_no_match non_matching.name, response.body
+  end
+
+  test "show filters entries by type" do
+    expense = create_transaction(name: "Expense Type Entry", amount: 100, account: @account)
+    income = create_transaction(name: "Income Type Entry", amount: -100, account: @account)
+
+    get account_url(@account, q: { types: [ "income" ] })
+
+    assert_response :success
+    assert_match income.name, response.body
+    assert_no_match expense.name, response.body
   end
 
   test "show lazily loads statement tab data unless statements tab is active" do
@@ -912,6 +1451,27 @@ class AccountsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "a[href=?]", edit_plaid_item_path(item, add_accounts: true), count: 0
   end
+
+  private
+    # #3630. Links a shared and an unshared account to +item+ through two fresh
+    # provider rows built by the block, and returns them in that order. Shares
+    # are reset first so the member's access is exactly the one granted here.
+    def link_two_accounts_to(item)
+      admin = users(:family_admin)
+      member = users(:family_member)
+      shared = accounts(:depository)
+      unshared = accounts(:investment)
+      unshared.update!(name: "Unshared Brokerage 235")
+
+      [ shared, unshared ].each_with_index do |account, index|
+        account.update!(owner: admin)
+        account.account_shares.destroy_all
+        AccountProvider.create!(account: account, provider: yield(item, index))
+      end
+      shared.account_shares.create!(user: member, permission: "read_only")
+
+      [ shared, unshared ]
+    end
 end
 
 class AccountsControllerSimplefinCtaTest < ActionDispatch::IntegrationTest
