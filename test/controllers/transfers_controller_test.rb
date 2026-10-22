@@ -639,6 +639,19 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_equal original_inflow_tags, transfer.inflow_transaction.reload.tag_ids
   end
 
+  test "confirming requires write permission on both transfer sides" do
+    # family_member: full_control on depository (outflow), read_only on credit_card (inflow)
+    sign_in users(:family_member)
+    transfer = transfers(:one)
+    original_inflow_kind = transfer.inflow_transaction.kind
+
+    patch transfer_url(transfer), params: { transfer: { status: "confirmed" } }
+
+    assert_redirected_to transactions_url
+    assert transfer.reload.pending?
+    assert_equal original_inflow_kind, transfer.inflow_transaction.reload.kind
+  end
+
   test "can add notes to transfer" do
     transfer = transfers(:one)
     assert_nil transfer.notes
@@ -648,6 +661,28 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to transactions_url
     assert_equal "Transfer updated", flash[:notice]
     assert_equal "Test notes", transfer.reload.notes
+  end
+
+  test "confirming a transfer keeps the outflow category" do
+    transfer = transfers(:one)
+    transfer.outflow_transaction.update!(category: categories(:food_and_drink))
+
+    patch transfer_url(transfer), params: { transfer: { status: "confirmed" } }
+
+    assert_redirected_to transactions_url
+    assert transfer.reload.confirmed?
+    assert_equal categories(:food_and_drink), transfer.outflow_transaction.reload.category
+  end
+
+  test "confirming a transfer keeps its notes" do
+    transfer = transfers(:one)
+    transfer.update!(notes: "Rent split")
+
+    patch transfer_url(transfer), params: { transfer: { status: "confirmed" } }
+
+    assert_redirected_to transactions_url
+    assert transfer.reload.confirmed?
+    assert_equal "Rent split", transfer.notes
   end
 
   test "handles rejection without FrozenError" do
@@ -707,6 +742,46 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
       transfer_leg_stream(transfer.outflow_transaction.entry).at_css("a[data-clickable-row-target='link']")["href"]
   end
 
+  test "turbo_stream update explicit unfiltered context wins over a filtered referer" do
+    users(:family_admin).update!(preferences: { "preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false })
+    transfer = transfers(:one)
+
+    patch transfer_url(transfer),
+      params: { view_ctx: "account", is_filtered: "0", transfer: { notes: "Explicit context" } },
+      headers: { "Referer" => "#{account_url(transfer.outflow_transaction.entry.account)}?search=coffee" },
+      as: :turbo_stream
+
+    assert_response :success
+    [ transfer.outflow_transaction.entry, transfer.inflow_transaction.entry ].each do |entry|
+      stream = transfer_leg_stream(entry)
+      assert_match(/w-30 shrink-0 justify-end/, stream.to_html,
+        "explicit is_filtered=false must win over a filtered referer")
+    end
+    assert_equal entry_path(transfer.outflow_transaction.entry, view_ctx: "account", is_filtered: false),
+      transfer_leg_stream(transfer.outflow_transaction.entry).at_css("a[data-clickable-row-target='link']")["href"]
+  end
+
+  test "show drawer renders context fields on each form without duplicate ids" do
+    transfer = create_confirmed_transfer(to: accounts(:investment))
+    get transfer_url(transfer, view_ctx: "account", is_filtered: "0")
+
+    assert_response :success
+    assert_select "input[type='hidden'][name='view_ctx'][value='account']", count: 2
+    assert_select "input[type='hidden'][name='is_filtered'][value='0']", count: 2
+    assert_select "input#view_ctx", count: 0
+    assert_select "input#is_filtered", count: 0
+
+    forms = css_select("form[action='#{transfer_path(transfer)}']").select do |form|
+      form.at_css("input[name='_method'][value='patch']")
+    end
+    assert_equal 3, forms.size
+    forms.each do |form|
+      expected_count = form.at_css("input[name='transfer[investment_contribution]']") ? 0 : 1
+      assert_select form, "input[name='view_ctx']", count: expected_count
+      assert_select form, "input[name='is_filtered']", count: expected_count
+    end
+  end
+
   test "turbo_stream update replaces both legs with the full-size partial when compact preview is disabled" do
     users(:family_admin).update!(preferences: { "preview_features_enabled" => false, "transactions_compact" => true, "transactions_group_by_date" => false })
     transfer = transfers(:one)
@@ -724,7 +799,8 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "can reject a match when only the outflow account is accessible" do
-    transfer = cross_owner_transfer(outflow_account: accounts(:depository), inflow_account: member_loan)
+    # Confirmed, so the legs carry transfer kinds that rejecting must reset
+    transfer = cross_owner_transfer(outflow_account: accounts(:depository), inflow_account: member_loan, status: "confirmed")
 
     assert_difference -> { Transfer.count } => -1, -> { RejectedTransfer.count } => 1 do
       patch transfer_url(transfer), params: { transfer: { status: "rejected" } }
@@ -814,6 +890,50 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
+  test "show offers the investment contribution switch only for transfers into an investment account" do
+    contribution = create_confirmed_transfer(to: accounts(:investment))
+    payment = create_confirmed_transfer(to: accounts(:credit_card))
+
+    get transfer_url(contribution)
+    assert_select "input[type=checkbox][name='transfer[investment_contribution]'][checked]"
+
+    get transfer_url(payment)
+    assert_select "input[name='transfer[investment_contribution]']", count: 0
+  end
+
+  test "turning off the investment contribution makes a plain transfer and reloads the page" do
+    transfer = create_confirmed_transfer(to: accounts(:investment))
+
+    patch transfer_url(transfer),
+          params: { transfer: { investment_contribution: "0" } },
+          headers: { "Accept" => "text/vnd.turbo-stream.html", "Referer" => transactions_url }
+
+    assert_response :success
+    assert_includes response.body, %(action="redirect")
+    assert_equal "funds_movement", transfer.outflow_transaction.reload.kind
+  end
+
+  test "turning the investment contribution back on restores it" do
+    transfer = create_confirmed_transfer(to: accounts(:investment))
+    transfer.update_investment_contribution!(false)
+
+    patch transfer_url(transfer), params: { transfer: { investment_contribution: "1" } }
+
+    assert_redirected_to transactions_url
+    assert_equal "investment_contribution", transfer.outflow_transaction.reload.kind
+  end
+
+  test "switching the investment contribution requires write permission on both transfer sides" do
+    sign_in users(:family_member)
+    accounts(:investment).account_shares.create!(user: users(:family_member), permission: "read_only")
+    transfer = create_confirmed_transfer(to: accounts(:investment))
+
+    patch transfer_url(transfer), params: { transfer: { investment_contribution: "0" } }
+
+    assert_redirected_to transactions_url
+    assert_equal "investment_contribution", transfer.outflow_transaction.reload.kind
+  end
+
   test "mark_as_recurring creates a recurring transfer" do
     transfer = transfers(:one)
     family = users(:family_admin).family
@@ -866,16 +986,23 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
       doc.css("turbo-stream[action='replace']").find { |s| s["target"] == dom_id(entry) }
     end
 
+    def create_confirmed_transfer(to:)
+      outflow_entry = create_transaction(date: Date.current, account: accounts(:depository), amount: 500)
+      inflow_entry = create_transaction(date: Date.current, account: to, amount: -500)
+
+      Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction).tap(&:confirm!)
+    end
+
     # A loan owned by family_member and not shared with family_admin
     def member_loan
       accounts(:loan).tap { |loan| loan.update!(owner: users(:family_member)) }
     end
 
-    def cross_owner_transfer(outflow_account:, inflow_account:)
+    def cross_owner_transfer(outflow_account:, inflow_account:, status: "pending")
       outflow = create_transaction(account: outflow_account, amount: 250, kind: "funds_movement")
       inflow = create_transaction(account: inflow_account, amount: -250, kind: "funds_movement")
 
-      Transfer.create!(outflow_transaction: outflow.transaction, inflow_transaction: inflow.transaction, status: "pending")
+      Transfer.create!(outflow_transaction: outflow.transaction, inflow_transaction: inflow.transaction, status: status)
     end
 
     def attach_fee(transfer, account:)

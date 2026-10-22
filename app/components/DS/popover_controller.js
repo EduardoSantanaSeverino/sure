@@ -6,6 +6,7 @@ import {
   shift,
 } from "@floating-ui/dom";
 import { Controller } from "@hotwired/stimulus";
+import { floatingStrategy } from "utils/floating_strategy";
 
 /**
  * Positioned panel for mixed content (forms, pickers, account menus).
@@ -64,7 +65,12 @@ export default class extends Controller {
     if (!this.show) this.close();
   };
 
+  // A click in a modal dialog opened on top of the panel (e.g. the
+  // data-turbo-confirm dialog of a form inside it) is not outside the panel.
   handleOutsideClick = (event) => {
+    const dialog = event.target.closest?.("dialog[open]");
+    if (dialog && !dialog.contains(this.element)) return;
+
     if (this.show && !this.element.contains(event.target)) this.close();
   };
 
@@ -80,19 +86,25 @@ export default class extends Controller {
     this.contentTarget.classList.toggle("hidden", !nextShow);
     this.buttonTarget.setAttribute("aria-expanded", nextShow.toString());
     if (nextShow) {
+      // Resolve the positioning mode once, as the panel opens. The layout
+      // around the trigger is stable for the life of the open panel.
+      this.positionStrategy = floatingStrategy(this.element);
       this.update();
       this.focusFirstElement();
     }
   };
 
-  close() {
+  // Used as an action (a Cancel button in the panel), close() returns focus
+  // to the trigger like Escape does, instead of dropping it to <body>.
+  close(event) {
     this.contentTarget.classList.add("hidden");
     this.buttonTarget.setAttribute("aria-expanded", "false");
+    if (event) this.buttonTarget.focus();
   }
 
   focusFirstElement() {
     const focusableElements =
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+      'button, [href], input:not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])';
     const firstFocusableElement =
       this.contentTarget.querySelectorAll(focusableElements)[0];
     if (firstFocusableElement) {
@@ -122,11 +134,10 @@ export default class extends Controller {
 
     const isSmallScreen = !window.matchMedia("(min-width: 768px)").matches;
     const useMobileFullwidth = isSmallScreen && this.mobileFullwidthValue;
-    // Size containers establish a containing block for positioned descendants.
-    // A fixed panel would apply Floating UI's container-relative coordinates
-    // against the viewport and drift away from its trigger.
-    const insideSizeContainer = this.hasSizeContainer();
-    const strategy = insideSizeContainer ? "absolute" : "fixed";
+    const strategy = this.positionStrategy || floatingStrategy(this.element);
+    // Commit the positioning mode before measuring so Floating UI resolves
+    // the offset parent under the same mode the coordinates are applied in.
+    this.contentTarget.style.position = strategy;
 
     computePosition(this.buttonTarget, this.contentTarget, {
       placement: useMobileFullwidth ? "bottom" : this.placementValue,
@@ -149,12 +160,5 @@ export default class extends Controller {
         });
       }
     });
-  }
-
-  hasSizeContainer() {
-    for (let ancestor = this.element.parentElement; ancestor; ancestor = ancestor.parentElement) {
-      if (getComputedStyle(ancestor).containerType !== "normal") return true;
-    }
-    return false;
   }
 }

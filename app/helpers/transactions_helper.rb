@@ -23,19 +23,22 @@ module TransactionsHelper
       { key: "category_filter", label: t("transactions.search.filters.category"), icon: "shapes" },
       { key: "tag_filter", label: t("transactions.search.filters.tag"), icon: "tags" },
       { key: "merchant_filter", label: t("transactions.search.filters.merchant"), icon: "store" },
-      { key: "ai_filter", label: t("transactions.search.filters.ai"), icon: "sparkles" }
+      { key: "ai_filter", label: t("transactions.search.filters.ai"), icon: "sparkles" },
+      { key: "attachment_filter", label: t("transactions.search.filters.attachment"), icon: "paperclip" }
     ]
+  end
+
+  # @param label [String] a stored investment_activity_label such as "Sweep In"
+  # @return [String] its name in the current locale, or the label itself when
+  #   it has no translation
+  def investment_activity_label_name(label)
+    t("transactions.activity_labels.#{label.parameterize(separator: "_")}", default: label)
   end
 
   # @param filter [Hash] one entry from transaction_search_filters
   # @return [String] the partial that renders that filter's controls
   def get_transaction_search_filter_partial_path(filter)
     "transactions/searches/filters/#{filter[:key]}"
-  end
-
-  # @return [Hash] the filter shown when the user has not picked one
-  def get_default_transaction_search_filter
-    transaction_search_filters[0]
   end
 
   # A split child is only folded under its parent when the user asked for

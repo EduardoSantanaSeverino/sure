@@ -119,10 +119,10 @@ class BillsMobileTest < ApplicationSystemTestCase
     assert_no_horizontal_scroll("the bill drawer")
   end
 
-  # Bill rows padded 12px under a 16px section header, so every card had a 4px
-  # step. And the review rows kept two buttons beside the text, which left a
-  # phone "VERIZON …" for a question and "Neighborhood …" for a name.
-  test "every list row lines up with its header and review rows read in full on a phone" do
+  # Bill rows follow the transaction recipe: 12px padding below @lg, 16px
+  # above it. Section headings keep their own 16px inset. Review rows must
+  # still show their full text and put their buttons below it on a phone.
+  test "bill rows use responsive padding and review rows read in full on a phone" do
     bill = @family.recurring_transactions.create!(
       name: "Verizon Wireless", account: accounts(:depository), amount: 95, currency: "USD",
       expected_day_of_month: Date.current.day, anchor_date: Date.current,
@@ -149,17 +149,7 @@ class BillsMobileTest < ApplicationSystemTestCase
     assert_text question
     assert_text "Neighborhood Fitness Club"
 
-    offsets = page.evaluate_script(<<~JS)
-      (() => {
-        const visibleChild = (el) => [...el.children].find((c) => c.getClientRects().length > 0);
-        return [...document.querySelectorAll(".\\\\@container a[href*='display=drawer']")].map((link) => {
-          const header = link.closest(".\\\\@container").previousElementSibling.querySelector("h2");
-          return Math.round(visibleChild(link).getBoundingClientRect().left - header.getBoundingClientRect().left);
-        });
-      })()
-    JS
-    assert offsets.any?, "expected bill rows on the overview"
-    assert_equal [ 0 ], offsets.uniq, "bill row content must share its section header's left edge"
+    assert_bill_row_padding 12
 
     [ question, "Neighborhood Fitness Club" ].each do |text|
       layout = page.evaluate_script(<<~JS, text)
@@ -175,8 +165,83 @@ class BillsMobileTest < ApplicationSystemTestCase
       assert_not layout["clipped"], "#{text.inspect} is truncated"
       assert layout["below"], "the buttons for #{text.inspect} should sit under the text"
     end
+
+    # Give the list itself enough width to cross @lg, not just the viewport.
+    page.driver.browser.execute_cdp("Emulation.clearDeviceMetricsOverride")
+    page.driver.browser.manage.window.resize_to(1920, 1400)
+    visit bills_url
+    assert_text bill.display_name
+    assert_bill_row_padding 16
   ensure
     page.driver.browser.execute_cdp("Emulation.clearDeviceMetricsOverride")
+  end
+
+  test "the last All bills row menu opens next to its button without clipping or scrolling" do
+    2.times do |i|
+      @family.recurring_transactions.create!(
+        name: "Row menu bill #{i}",
+        account: accounts(:depository), amount: 10 + i, currency: "USD",
+        expected_day_of_month: Date.current.day, anchor_date: Date.current,
+        last_occurrence_date: Date.current, next_expected_date: Date.current,
+        status: "active", manual: true
+      )
+    end
+
+    page.driver.browser.manage.window.resize_to(1400, 700)
+    visit bills_url(view: "all")
+
+    menu = all("[data-controller='DS--menu']", visible: true).last
+    button = menu.find("button")
+    page.execute_script("arguments[0].scrollIntoView({ block: 'center' })", button)
+    scroll_before = page.evaluate_script("window.scrollY")
+
+    button.click
+    assert_selector "[data-DS--menu-target='content']:not(.hidden)"
+
+    settled = nil
+    deadline = Time.now + 3
+    previous = nil
+    loop do
+      current = page.evaluate_script(<<~JS)
+        (() => {
+          const menus = [...document.querySelectorAll("[data-controller='DS--menu']")]
+            .filter((menu) => !menu.querySelector("[data-DS--menu-target='content']").classList.contains("hidden"));
+          const panel = menus[menus.length - 1].querySelector("[data-DS--menu-target='content']");
+          const r = panel.getBoundingClientRect();
+          return [ r.top, r.bottom, r.left, r.right ];
+        })()
+      JS
+      if previous && current.zip(previous).all? { |a, b| (a - b).abs < 1 }
+        settled = current
+        break
+      end
+      previous = current
+      assert Time.now < deadline, "menu panel geometry never settled"
+      sleep 0.1
+    end
+
+    geometry = page.evaluate_script(<<~JS)
+      (() => {
+        const menus = [...document.querySelectorAll("[data-controller='DS--menu']")]
+          .filter((menu) => !menu.querySelector("[data-DS--menu-target='content']").classList.contains("hidden"));
+        const menu = menus[menus.length - 1];
+        const b = menu.querySelector("button").getBoundingClientRect();
+        return {
+          buttonTop: b.top, buttonBottom: b.bottom, buttonLeft: b.left, buttonRight: b.right,
+          viewportWidth: window.innerWidth, viewportHeight: window.innerHeight
+        };
+      })()
+    JS
+    geometry["panelTop"], geometry["panelBottom"], geometry["panelLeft"], geometry["panelRight"] = settled
+
+    vertical_gap = [ (geometry["panelTop"] - geometry["buttonBottom"]).abs,
+                     (geometry["buttonTop"] - geometry["panelBottom"]).abs ].min
+    assert_operator vertical_gap, :<=, 15, "menu panel should open immediately above or below its button"
+    assert_operator geometry["panelLeft"], :>=, -1
+    assert_operator geometry["panelRight"], :<=, geometry["viewportWidth"] + 1
+    assert_operator geometry["panelTop"], :>=, -1
+    assert_operator geometry["panelBottom"], :<=, geometry["viewportHeight"] + 1
+    assert_equal scroll_before, page.evaluate_script("window.scrollY"), "opening the menu must not scroll the page"
   end
 
   # A green overflow assertion proves nothing unless it can go red, and this
@@ -260,6 +325,18 @@ class BillsMobileTest < ApplicationSystemTestCase
   end
 
   private
+    def assert_bill_row_padding(expected)
+      assert_selector "[data-controller~='clickable-row'] a[data-clickable-row-target='link'][href*='display=drawer']"
+      paddings = page.evaluate_script(<<~JS)
+        [...document.querySelectorAll("a[data-clickable-row-target='link'][href*='display=drawer']")].map((link) => {
+          const row = link.closest("[data-controller~='clickable-row']");
+          const style = getComputedStyle(row);
+          return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].map(parseFloat);
+        })
+      JS
+      assert_equal [ [ expected ] * 4 ], paddings.uniq, "bill rows must use #{expected}px padding on every side"
+    end
+
     # The document must never be wider than the viewport, and neither must the
     # scroll container inside it. An open drawer sits outside #main, in a scroll
     # container of its own.
