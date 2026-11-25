@@ -1,5 +1,6 @@
 class TransactionsController < ApplicationController
   include EntryableResource
+  include FilterClearable
 
   before_action :set_entry_for_unlock, only: :unlock
   before_action :set_entry_for_tags, only: :update_tags
@@ -28,7 +29,7 @@ class TransactionsController < ApplicationController
                        .reverse_chronological
                        .includes(
                          { entry: :account },
-                         :category, :merchant, :tags,
+                         :category, { merchant: { logo_attachment: :blob } }, :tags,
                          # Union of #2643 counterpart UI + Skylight category-menu N+1:
                          # - outflow rows need inflow_transaction (to_account) for both
                          #   counterpart display and Transfer#categorizable?/#payment?
@@ -49,8 +50,23 @@ class TransactionsController < ApplicationController
                          }
                        )
 
-    @pagy, @transactions = pagy(base_scope, limit: safe_per_page(stored_params["per_page"]))
+    effective_per_page = if Current.user.preview_features_enabled? && Current.user.transactions_per_page.present?
+      Current.user.transactions_per_page
+    else
+      stored_params["per_page"]
+    end
+
+    @pagy, @transactions = pagy(base_scope, limit: safe_per_page(effective_per_page))
     Transaction::ActivitySecurityPreloader.new(@transactions).preload
+
+    @compact_view = Current.user.preview_features_enabled? && Current.user.transactions_compact?
+    @group_by_date = Current.user.transactions_group_by_date?
+
+    # Note: the global transactions page never shows a per-row balance column
+    # (compact partials only render it when view_ctx == "account"), so unlike
+    # AccountsController#show we intentionally don't compute running balances
+    # here — it would be an extra Balance query whose result is never displayed.
+    @transfer_hint_transaction_ids = Current.family.transaction_ids_with_transfer_candidates(@transactions, user: Current.user)
 
     # Preload split parent data
     entry_ids = @transactions.map { |t| t.entry.id }
@@ -60,7 +76,7 @@ class TransactionsController < ApplicationController
       split_parent_ids = @transactions.filter_map { |t| t.entry.parent_entry_id }.uniq
       if split_parent_ids.any?
         Entry.where(id: split_parent_ids)
-             .includes(:account, entryable: [ :category, :merchant ])
+             .includes(:account, entryable: [ :category, { merchant: { logo_attachment: :blob } } ])
              .index_by(&:id)
       else
         {}
@@ -70,11 +86,7 @@ class TransactionsController < ApplicationController
     end
 
     # Preload which entries on this page are split parents (have children) to avoid N+1
-    @split_parent_entry_ids = if entry_ids.any?
-      Entry.where(parent_entry_id: entry_ids).distinct.pluck(:parent_entry_id).to_set
-    else
-      Set.new
-    end
+    @split_parent_entry_ids = Entry.split_parent_ids_among(entry_ids)
 
     # Counts what the categorize wizard can act on, so read-only shares don't
     # keep the "Categorize" menu item visible.
@@ -98,7 +110,7 @@ class TransactionsController < ApplicationController
       []
     else
       Current.family.recurring_transactions.accessible_by(Current.user)
-                    .where(id: projected_recurring_ids).includes(:merchant).to_a
+                    .where(id: projected_recurring_ids).includes(merchant: { logo_attachment: :blob }).to_a
     end
 
     @breadcrumbs = [ [ t("breadcrumbs.home"), root_path ], [ t("breadcrumbs.transactions"), nil ] ]
@@ -106,24 +118,10 @@ class TransactionsController < ApplicationController
 
   def clear_filter
     updated_params = {
-      "q" => search_params,
+      "q" => without_cleared_filter(search_params),
       "page" => params[:page],
       "per_page" => params[:per_page]
     }
-
-    q_params = updated_params["q"] || {}
-
-    param_key = params[:param_key]
-    param_value = params[:param_value]
-
-    if q_params[param_key].is_a?(Array)
-      q_params[param_key].delete(param_value)
-      q_params.delete(param_key) if q_params[param_key].empty?
-    else
-      q_params.delete(param_key)
-    end
-
-    updated_params["q"] = q_params.presence
 
     # Add flag to indicate filters were explicitly cleared
     updated_params["filter_cleared"] = "1" if updated_params["q"].blank?
@@ -139,6 +137,7 @@ class TransactionsController < ApplicationController
     if account.nil?
       @entry = Current.family.entries.new(entry_params)
       @entry.valid?
+      clear_stale_auto_generated_name!(@entry)
       set_new_transaction_form_options
       render :new, status: :unprocessable_entity
       return
@@ -165,9 +164,11 @@ class TransactionsController < ApplicationController
       @entry.lock_saved_attributes!
       @entry.mark_user_modified!
       @entry.transaction.lock_attr!(:tag_ids) if @entry.transaction.tags.any?
+      @entry.apply_immediate_rules_later
 
       respond_with_created_entry(@entry)
     else
+      clear_stale_auto_generated_name!(@entry)
       set_new_transaction_form_options
       render :new, status: :unprocessable_entity
     end
@@ -185,6 +186,8 @@ class TransactionsController < ApplicationController
   end
 
   def update
+    rule_input = @entry.rule_input_snapshot
+
     if @entry.update(permitted_entry_params)
       sync_needed = @entry.saved_changes_affect_balances?
       transaction = @entry.transaction
@@ -194,7 +197,8 @@ class TransactionsController < ApplicationController
         flash[:cta] = {
           type: "category_rule",
           category_id: transaction.category_id,
-          category_name: transaction.category.name
+          category_name: transaction.category.name,
+          merchant_name: @entry.name
         }
       end
 
@@ -202,6 +206,7 @@ class TransactionsController < ApplicationController
       @entry.mark_user_modified!
       @entry.transaction.lock_attr!(:tag_ids) if @entry.transaction.tags.any?
       @entry.sync_account_later if sync_needed
+      @entry.apply_immediate_rules_later(changed_from: rule_input)
 
       notes_changed = @entry.saved_change_to_notes?
 
@@ -214,6 +219,36 @@ class TransactionsController < ApplicationController
         format.html { redirect_back_or_to account_path(@entry.account), notice: t(".updated") }
         format.turbo_stream do
           in_split_group = helpers.in_split_group?(@entry, params[:grouped])
+          # The row draws the "Transfer?" hint, and its cache key records
+          # whether it applies, so the hint is worked out as the list does.
+          @transfer_hint_transaction_ids = Current.family.transaction_ids_with_transfer_candidates([ @entry.transaction ], user: Current.user)
+
+          # Compact-aware row replace: keep flat/grouped compact avatar-free (only CATEGORY pill recolors)
+          is_compact = Current.user.preview_features_enabled? && Current.user.transactions_compact?
+          is_flat_compact = is_compact && !Current.user.transactions_group_by_date?
+          @accessible_account_ids ||= Current.user.accessible_accounts.pluck(:id) if is_compact
+          assign_compact_row_context
+          view_ctx, is_filtered = @view_ctx, @is_filtered
+          running_balance = nil
+          hide_balance = true
+          if is_flat_compact
+            running_balance = Account::RunningBalanceCalculator.new([ @entry ]).running_balances[@entry.id]
+            hide_balance = view_ctx != "account" || is_filtered ? true : false
+          end
+          entry_row_stream = if is_compact
+            turbo_stream.replace(
+              dom_id(@entry),
+              partial: "transactions/compact_transaction",
+              locals: { entry: @entry, view_ctx: view_ctx || "global", is_filtered: is_filtered, in_split_group: in_split_group, running_balance: running_balance, hide_balance: hide_balance, flat: is_flat_compact }
+            )
+          else
+            turbo_stream.replace(
+              dom_id(@entry),
+              partial: "entries/entry",
+              locals: { entry: @entry, in_split_group: in_split_group }
+            )
+          end
+
           render turbo_stream: [
             turbo_stream.replace(
               dom_id(@entry, :header),
@@ -235,16 +270,13 @@ class TransactionsController < ApplicationController
               partial: "transactions/mark_recurring",
               locals: { entry: @entry }
             ) if can_edit_entry? && !@entry.split_child?),
-            turbo_stream.replace(
-              dom_id(@entry),
-              partial: "entries/entry",
-              locals: { entry: @entry, in_split_group: in_split_group }
-            ),
+            entry_row_stream,
             *flash_notification_stream_items
           ].compact
         end
       end
     else
+      assign_compact_row_context
       assign_mark_recurring_state
       render :show, status: :unprocessable_entity
     end
@@ -253,18 +285,25 @@ class TransactionsController < ApplicationController
   def update_tags
     return unless require_account_permission!(@entry.account, :annotate, redirect_path: transaction_path(@entry))
 
+    rule_input = @entry.rule_input_snapshot
+
     # The transaction-row tag picker toggles one tag at a time; the drawer's
-    # multiselect sends the full set.
+    # multiselect sends the full set, plus the set it last saved so only its
+    # own changes apply and tags a rule added meanwhile stay.
     if params[:toggle_tag_id].present?
       @toggled_tag = Current.family.tags.find(params[:toggle_tag_id])
       @entry.transaction.toggle_tag!(@toggled_tag)
+    elsif params.key?(:previous_tag_ids)
+      previous_ids = Array(params[:previous_tag_ids]).reject(&:blank?)
+      @entry.transaction.merge_tag_changes!(tag_ids_param, previous_ids, available_tags: Current.family.tags)
     else
-      @entry.transaction.tag_ids = Current.family.tags.where(id: tag_ids_param).pluck(:id)
+      @entry.transaction.replace_tags!(tag_ids_param, available_tags: Current.family.tags)
     end
 
     @entry.lock_saved_attributes!
     @entry.mark_user_modified!
     @entry.transaction.lock_attr!(:tag_ids)
+    @entry.apply_immediate_rules_later(changed_from: rule_input)
 
     respond_to do |format|
       # JSON stays first so Accept: */* callers keep the original response.
@@ -449,24 +488,71 @@ class TransactionsController < ApplicationController
     redirect_back_or_to transactions_path
   end
 
+  # Advances the manual reconciled_status through unreconciled -> cleared ->
+  # reconciled -> unreconciled. Scoped to manual (unsynced) accounts — synced
+  # accounts already get duplicate-matching (Account::ProviderImportAdapter)
+  # and statement-level reconciliation (AccountStatement).
+  def reconcile
+    return head :not_found unless Current.family.manual_reconciliation?
+
+    transaction = accessible_transactions.includes(entry: :account).find(params[:id])
+    entry = transaction.entry
+
+    return unless require_account_permission!(entry.account)
+
+    unless entry.account.manual?
+      flash[:alert] = t("transactions.reconcile.not_manual_account")
+      redirect_back_or_to transactions_path
+      return
+    end
+
+    entry.advance_reconciled_status!
+    flash[:notice] = t("transactions.reconcile.success", status: t("transactions.reconcile.statuses.#{entry.reconciled_status}"))
+
+    redirect_back_or_to transactions_path
+  rescue ActiveRecord::RecordInvalid => e
+    DebugLogEntry.capture(
+      category: "reconciliation",
+      level: "error",
+      message: "Failed to update reconciled_status for transaction #{params[:id]}: #{e.message}",
+      source: "TransactionsController#reconcile",
+      family: Current.family,
+      user: Current.user,
+      account: entry&.account,
+      metadata: {
+        transaction_id: params[:id],
+        entry_id: entry&.id,
+        error_class: e.class.name,
+        error_message: e.message
+      }
+    )
+    flash[:alert] = t("transactions.reconcile.failure")
+    redirect_back_or_to transactions_path
+  end
+
   def mark_as_recurring
     transaction = accessible_transactions.includes(entry: :account).find(params[:id])
 
     return unless require_account_permission!(transaction.entry.account)
 
-    # Check if a recurring transaction already exists for this pattern.
-    # The UI disables the button ahead of time using the same lookup, but this
-    # guard remains as the authoritative check (e.g. stale page, direct POST).
-    existing = transaction.existing_manual_recurring_transaction
-
-    if existing
-      flash[:alert] = t("recurring_transactions.already_exists")
-      redirect_back_or_to transactions_path
-      return
-    end
-
     begin
-      recurring_transaction = RecurringTransaction.create_from_transaction(transaction)
+      # Check if a recurring transaction already exists for this pattern.
+      # The UI disables the button ahead of time using the same lookup, but
+      # this guard remains as the authoritative check (e.g. stale page, direct
+      # POST). The check and the create hold the entry lock the Allocator and
+      # the add-bill form take, so neither can slip in between them.
+      blocked = nil
+      Entry.transaction do
+        RecurringTransaction::Allocator.lock_entry!(transaction.entry)
+        blocked = mark_recurring_blocked_message(transaction)
+        RecurringTransaction.create_from_transaction(transaction) unless blocked
+      end
+
+      if blocked
+        flash[:alert] = blocked
+        redirect_back_or_to transactions_path
+        return
+      end
 
       respond_to do |format|
         format.html do
@@ -525,48 +611,54 @@ class TransactionsController < ApplicationController
     end
   end
 
+  def name_suggestions
+    unknown_names = LanguagesHelper::SUPPORTED_LOCALES.map { |locale| I18n.t("transactions.unknown_name", locale: locale) }
+    transactions = Current.family.transactions.merge(Account.accessible_by(Current.user)).where.not(entries: { name: unknown_names })
+    query = params[:q].to_s.strip
+
+    @suggestions = if query.length < Transaction::MIN_LENGTH_FOR_NAME_SUGGESTION
+      names = recent_transaction_names.select { |name| name.downcase.include?(query.downcase) }
+      transactions.name_suggestions_for_names(names)
+    else
+      transactions.name_suggestions_for(query)
+    end
+  end
+
   private
-    # Scoped by user (not just family) because Current.accessible_entries is
-    # user-scoped for family sharing (see Current#accessible_entries).
-    #
-    # Includes Family#accounts_status_version because `uncategorized_transactions`
-    # filters on account status (draft/active), and toggling an account's
-    # active status (AccountsController#toggle_active) doesn't touch `entries`
-    # or `AccountShare`, so it wouldn't otherwise bust this cache.
     def uncategorized_count_cache_key
       "transactions_uncategorized_count/v5/#{Current.family.id}/#{Current.user.id}/" \
         "#{Current.family.entries_version}/#{Current.family.accounts_status_version}/#{Current.account_share_version}"
     end
 
-    # Scoped additionally by Date.current since the "next 10 days" window is
-    # date-dependent and would otherwise return a stale window on a cache hit
-    # from an earlier day.
-    #
-    # Includes Family#recurring_transaction_merchants_version because the
-    # cached records are preloaded with :merchant and rendered with its
-    # name/logo, but editing a FamilyMerchant or a shared ProviderMerchant
-    # doesn't touch `recurring_transactions`.
     def projected_recurring_cache_key
       "transactions_projected_recurring/v6/#{Current.family.id}/#{Current.user.id}/#{Date.current}/" \
         "#{Current.family.recurring_transactions_version}/#{Current.family.accounts_status_version}/" \
         "#{Current.family.recurring_transaction_merchants_version}/#{Current.account_share_version}"
     end
 
-    # The "Mark as Recurring" block is only ever rendered under these same
-    # conditions (see transactions/show.html.erb), so skip the extra query
-    # entirely when it won't be used — this runs on every show/failed-update
-    # render, including read-only viewers and split-child transactions.
+    def covering_series_for(entry)
+      Current.family.recurring_transactions.accessible_by(Current.user).covering(entry)
+    end
+
+    def mark_recurring_blocked_message(transaction)
+      if covering_series_for(transaction.entry)
+        t("recurring_transactions.already_covered")
+      elsif RecurringTransaction.identity_taken_by(transaction)
+        t("recurring_transactions.already_exists")
+      end
+    end
+
     def assign_mark_recurring_state
       return unless can_edit_entry? && !@entry.split_child?
 
-      existing = @entry.transaction.existing_manual_recurring_transaction
+      blocked = mark_recurring_blocked_message(@entry.transaction)
 
       @mark_recurring_href = mark_as_recurring_transaction_path(@entry.transaction)
-      @mark_recurring_subtitle_class = existing ? "text-subdued" : "text-secondary"
-      @mark_recurring_subtitle = existing ? t("recurring_transactions.already_exists") : t("transactions.show.mark_recurring_subtitle")
-      @mark_recurring_disabled = existing.present?
-      @mark_recurring_title = existing ? t("recurring_transactions.already_exists") : nil
-      @mark_recurring_button_class = existing ? "disabled:opacity-50" : nil
+      @mark_recurring_subtitle_class = blocked ? "text-subdued" : "text-secondary"
+      @mark_recurring_subtitle = blocked || t("transactions.show.mark_recurring_subtitle")
+      @mark_recurring_disabled = blocked.present?
+      @mark_recurring_title = blocked
+      @mark_recurring_button_class = blocked ? "disabled:opacity-50" : nil
     end
 
     def accessible_transactions
@@ -693,6 +785,16 @@ class TransactionsController < ApplicationController
       set_entry
     end
 
+    # Entry#set_default_name may have already filled in a category/merchant
+    # -derived name during this failed validation attempt. A blank
+    # submission must still render blank -- otherwise the generated text
+    # becomes the field's literal value, and if the user then changes the
+    # category/merchant and resubmits, that stale generated name (no longer
+    # blank) skips the callback entirely and gets saved as-is.
+    def clear_stale_auto_generated_name!(entry)
+      entry.name = "" if entry_params[:name].blank?
+    end
+
     def set_new_transaction_form_options
       accessible_accounts_scope = accessible_accounts
 
@@ -704,8 +806,43 @@ class TransactionsController < ApplicationController
         .includes(:account_providers, logo_attachment: :blob)
         .to_a
       @categories = Current.family.categories.alphabetically_by_hierarchy.to_a
-      @merchants = Current.family.available_merchants_for(Current.user).alphabetically.to_a
+      @merchants = Current.family.available_merchants_for(Current.user).with_attached_logo.alphabetically.to_a
       @tags = Current.family.tags.alphabetically.to_a
+    end
+
+    # Autocomplete suggestions for the name field, only queried when the
+    # auto-generate setting is on: lets a user reuse an actual previous name
+    # instead of leaving the field blank (which would produce a generic
+    # fallback), the same way it curbs bulk-identical generated names.
+    def recent_transaction_names
+      return [] unless Current.family.auto_generate_transaction_names?
+
+      # Current.accessible_entries (not Entry.family_scope), so a non-admin
+      # family member never sees names from accounts that weren't shared
+      # with them -- family-wide settings still respect per-account sharing.
+      # Its underlying Account.accessible_by scope is itself a `.distinct`
+      # query, so ORDER BY created_at must stay in the pluck'd column list
+      # (a plain "pluck(:name)" here would hit Postgres's "SELECT DISTINCT
+      # ... ORDER BY expressions must appear in select list"); dedup by name
+      # happens in Ruby afterward instead.
+      #
+      # Checked across every supported locale (like Entry#generic_name?'s
+      # unknown-name check), not just the current one -- otherwise an old
+      # entry named under a different locale's fallback (e.g. "Unbekannte
+      # Transaktion") would still surface as a "recent name" suggestion. A
+      # full generic_name? reuse isn't practical here since it also needs a
+      # loaded entryable.category, which isn't available cheaply from a pluck.
+      unknown_names = LanguagesHelper::SUPPORTED_LOCALES.map { |locale| I18n.t("transactions.unknown_name", locale: locale) }
+
+      Current.accessible_entries
+        .where(entryable_type: "Transaction")
+        .where.not(name: unknown_names)
+        .order(created_at: :desc)
+        .limit(200)
+        .pluck(:name, :created_at)
+        .map(&:first)
+        .uniq
+        .first(20)
     end
 
     # Filters entry_params based on the user's permission on the account.
@@ -726,6 +863,14 @@ class TransactionsController < ApplicationController
         {} # read_only — no edits allowed
       end
 
+      # A split part's amount, currency and kind belong to the split; the editor
+      # disables them, and a change would make the parts stop adding up to the
+      # parent or turn a transfer leg back into a plain transaction.
+      if @entry.split_child?
+        permitted = permitted.except(:amount, :currency)
+        permitted[:entryable_attributes] = permitted[:entryable_attributes].except(:kind) if permitted[:entryable_attributes]
+      end
+
       # A matched transfer's category lives on its outflow leg; a category
       # sent for the inflow leg would look saved but never reach a budget.
       if permitted[:entryable_attributes]&.key?(:category_id) && @entry.transaction.category_set_on_transfer_outflow?
@@ -744,7 +889,7 @@ class TransactionsController < ApplicationController
                 :amount_operator, :active_accounts_only,
                 accounts: [], account_ids: [],
                 categories: [], merchants: [], types: [], tags: [], status: [], ai_status: [],
-                attachment_status: []
+                attachment_status: [], reconcile_status: []
               )
               .to_h
               .compact_blank
@@ -770,10 +915,24 @@ class TransactionsController < ApplicationController
 
         params_to_restore[:q] = stored_params["q"].presence || {}
         params_to_restore[:page] = stored_params["page"].presence || 1
-        params_to_restore[:per_page] = stored_params["per_page"].presence || 50
+        preview_per_page = Current.user.transactions_per_page if Current.user.preview_features_enabled? && Current.user.transactions_per_page.present?
+        params_to_restore[:per_page] = preview_per_page.presence || stored_params["per_page"].presence || 50
 
         redirect_to transactions_path(params_to_restore)
       else
+        # Persist per_page to user preferences when preview is enabled and a valid per_page is present
+        if Current.user.preview_features_enabled? && params[:per_page].present?
+          safe = safe_per_page(params[:per_page])
+          # safe_per_page returns nearest allowed; only persist if it matches the requested value
+          if safe.to_s == params[:per_page].to_s && Current.user.transactions_per_page != safe
+            begin
+              Current.user.update_transaction_preferences("transactions_per_page" => safe)
+            rescue ActiveRecord::ActiveRecordError => e
+              Rails.logger.warn("Failed to persist transactions_per_page preference for user=#{Current.user.id}: #{e.class}: #{e.message}")
+            end
+          end
+        end
+
         Current.session.update!(
           prev_transaction_page_params: {
             q: search_params,

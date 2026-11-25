@@ -21,6 +21,16 @@ class SidebarSparklinesTest < ApplicationSystemTestCase
   # with a short one and every wait below is proportional to it.
   SHORT_TIMEOUT_MS = 300
 
+  # A real request may outlive the short window on a busy runner and raise the
+  # badge until its response renders over it. The badge checks therefore wait
+  # for every fetched frame to finish instead of requiring a response time.
+  SETTLE_WAIT_SECONDS = 15
+
+  # Long enough for a sparkline response to arrive inside it, so the tests
+  # that use it only fail on what the countdown does with a response it
+  # already had.
+  RESPONSE_WINDOW_MS = 1500
+
   # Holds sparkline responses open for as long as a test needs one pending.
   # The wait has to happen inside the server thread, which the test cannot
   # reach, so a process-wide flag stands in for it; clearing the flag releases
@@ -40,10 +50,52 @@ class SidebarSparklinesTest < ApplicationSystemTestCase
   end
   AccountsController.prepend(StalledSparklines)
 
+  # Answers sparkline requests with a response that has no sparkline frame:
+  # a server error, or a page without the frame like the sign-in page a
+  # request is redirected to once the session has expired.
+  module BrokenSparklines
+    mattr_accessor :mode, default: nil
+
+    def sparkline
+      case BrokenSparklines.mode
+      when :server_error
+        head :internal_server_error
+      when :without_frame
+        render html: "<!DOCTYPE html><html><head></head><body><p>Sign in</p></body></html>".html_safe, layout: false
+      else
+        super
+      end
+    end
+  end
+  AccountsController.prepend(BrokenSparklines)
+
+  # The shared browser caches versioned sparkline URLs for a day, so salt the
+  # versions per test or the stalled/broken responses below are never requested.
+  module FreshSparklineVersions
+    mattr_accessor :salt
+
+    module AccountKey
+      def sparkline_cache_key_from(...)
+        "#{super}#{FreshSparklineVersions.salt}"
+      end
+    end
+
+    module GroupKey
+      def cache_key
+        "#{super}#{FreshSparklineVersions.salt}"
+      end
+    end
+  end
+  Account.prepend(FreshSparklineVersions::AccountKey)
+  AccountableSparkline.prepend(FreshSparklineVersions::GroupKey)
+
   setup do
+    FreshSparklineVersions.salt = SecureRandom.hex(4)
     @user = users(:family_admin)
     sign_in @user
   end
+
+  teardown { FreshSparklineVersions.salt = nil }
 
   test "a frame that is never fetched keeps its placeholder instead of a timeout badge" do
     with_short_sparkline_timeout do
@@ -58,6 +110,7 @@ class SidebarSparklinesTest < ApplicationSystemTestCase
       # simply never asked for.
       assert_selector "#{GROUP_SPARKLINE_FRAME}[complete]", minimum: 1
 
+      wait_for_fetched_frames
       wait_out_timeout_window
 
       # No badge anywhere in the sidebar, group totals included.
@@ -75,8 +128,9 @@ class SidebarSparklinesTest < ApplicationSystemTestCase
 
       expand_first_group
 
-      assert_selector "#{ACCOUNT_SPARKLINE_FRAME}[complete] [data-controller='time-series-chart']", minimum: 1
+      assert_selector "#{ACCOUNT_SPARKLINE_FRAME}[complete] [data-controller='time-series-chart']", minimum: 1, wait: SETTLE_WAIT_SECONDS
 
+      wait_for_fetched_frames
       wait_out_timeout_window
 
       assert_no_selector "#{SPARKLINE_FRAME} p", text: BADGE_TEXT, visible: :all
@@ -103,6 +157,44 @@ class SidebarSparklinesTest < ApplicationSystemTestCase
     assert_selector "#{ACCOUNT_SPARKLINE_FRAME}[complete] [data-controller='time-series-chart'] svg path", minimum: 1
   end
 
+  # Turbo inserts a response and then waits for repaints before it fires
+  # turbo:frame-load. Slowing those repaints down after the insertion lets the
+  # window expire inside that gap, where a countdown that only stops on
+  # frame-load replaces the sparkline that has just been drawn. The window is
+  # long enough for the response itself to arrive in time.
+  test "a sparkline that has rendered is not replaced by the timeout badge" do
+    stub_const(AccountsHelper, :SPARKLINE_FRAME_TIMEOUT_MS, RESPONSE_WINDOW_MS) do
+      visit root_path
+
+      record_account_sparkline_response_times
+      page.execute_script(<<~JS)
+        const requestAnimationFrame = window.requestAnimationFrame
+        document.addEventListener("turbo:before-frame-render", (event) => {
+          if (!event.target.id.startsWith("sparkline_account_")) return
+          const render = event.detail.render
+          event.detail.render = (currentElement, newElement) => {
+            render(currentElement, newElement)
+            window.requestAnimationFrame = (callback) =>
+              setTimeout(() => requestAnimationFrame(callback), #{RESPONSE_WINDOW_MS})
+            setTimeout(() => { window.requestAnimationFrame = requestAnimationFrame }, #{RESPONSE_WINDOW_MS * 4})
+          }
+        })
+      JS
+
+      expand_first_group
+
+      assert_selector ACCOUNT_SPARKLINE_FRAME, minimum: 1
+      assert_no_selector "#{ACCOUNT_SPARKLINE_FRAME}:not([complete])", wait: SETTLE_WAIT_SECONDS
+
+      # A response that missed the window would let the badge land before the
+      # render and be painted over, which proves nothing about the gap.
+      assert_account_sparkline_responses_within RESPONSE_WINDOW_MS
+
+      assert_no_selector "#{ACCOUNT_SPARKLINE_FRAME} p", text: BADGE_TEXT, visible: :all
+      assert_selector "#{ACCOUNT_SPARKLINE_FRAME} [data-controller='time-series-chart'] svg path", minimum: 1
+    end
+  end
+
   test "a request that never comes back still raises the timeout badge" do
     with_short_sparkline_timeout do
       visit root_path
@@ -115,6 +207,212 @@ class SidebarSparklinesTest < ApplicationSystemTestCase
         assert_selector "#{ACCOUNT_SPARKLINE_FRAME} p", text: BADGE_TEXT, minimum: 1
       end
     end
+  end
+
+  # A Turbo visit replaces the page body, sidebar included. The sparklines sit
+  # in permanent wrappers so the next page takes over the charts already drawn
+  # rather than starting every frame from its placeholder and fetching it again.
+  test "a visit keeps the sparklines already drawn instead of fetching them again" do
+    visit root_path
+    expand_first_group
+    assert_selector "#{ACCOUNT_SPARKLINE_FRAME}[complete] svg path", minimum: 1
+    kept = mark_drawn_sparklines
+    record_sparkline_requests
+
+    visit_first_open_account
+
+    assert_equal kept, page.evaluate_script("document.querySelectorAll(#{"#{SPARKLINE_FRAME}[data-kept]".to_json}).length"), "the drawn sparklines were replaced"
+    assert_selector "#{ACCOUNT_SPARKLINE_FRAME}[data-kept][complete] svg path", minimum: 1
+    assert_empty page.evaluate_script("window.sparklineRequests").select { |id| id.start_with?("sparkline_account_") }
+  end
+
+  test "a visit keeps the account logos instead of drawing them again" do
+    visit root_path
+    expand_first_group
+    kept = page.evaluate_script(<<~JS)
+      (() => {
+        const logos = document.querySelectorAll("#sidebar-scroll details[open] [id^='logo_keep_']")
+        logos.forEach((logo) => { logo.dataset.kept = "1" })
+        return logos.length
+      })()
+    JS
+    assert_operator kept, :>, 0
+
+    visit_first_open_account
+
+    assert_equal kept, page.evaluate_script("document.querySelectorAll(\"[id^='logo_keep_'][data-kept]\").length"), "the logos were drawn again"
+  end
+
+  test "a logo that failed to load is not carried to the next page" do
+    account = accounts(:depository)
+    account.logo.attach(io: StringIO.new("not an image"), filename: "broken.png", content_type: "image/png")
+
+    visit root_path
+    expand_first_group
+
+    wrapper = "[id^='logo_keep_'][id*='#{account.id}']"
+    assert_selector wrapper, minimum: 1
+    assert_no_selector "#{wrapper} img", wait: 10
+    assert page.evaluate_script(%(Array.from(document.querySelectorAll(#{wrapper.to_json})).filter((el) => el.offsetParent).every((el) => !el.hasAttribute("data-turbo-permanent")))),
+      "a wrapper whose logo failed is still permanent"
+  end
+
+  # iOS Safari can fail a stored logo it only revalidated (a 304 for an image
+  # whose data it already dropped). One failure must not cost the logo: the
+  # image is fetched again once, at a fresh URL, before the initials show.
+  test "a logo that fails once is fetched again at a fresh URL and shown" do
+    account = accounts(:depository)
+    account.logo.attach(io: file_fixture("square-placeholder.png").open, filename: "logo.png", content_type: "image/png")
+
+    visit root_path
+    expand_first_group
+
+    image = "[id^='logo_keep_'][id*='#{account.id}'] img"
+    assert_selector image, minimum: 1
+    page.execute_script(<<~JS)
+      const img = Array.from(document.querySelectorAll(#{image.to_json})).find((el) => el.offsetParent);
+      img.dataset.probe = "1";
+      img.dispatchEvent(new Event("error"));
+    JS
+
+    assert_selector "img[data-probe][src*='retry=']", visible: :all, wait: 5
+    page.document.synchronize(5) do
+      loaded = page.evaluate_script(%((() => { const img = document.querySelector("img[data-probe]"); return !!img && img.complete && img.naturalWidth > 0 })()))
+      raise Capybara::ExpectationNotMet, "the retried logo did not load" unless loaded
+    end
+    assert page.evaluate_script(%(document.querySelector("img[data-probe]").closest("[id^='logo_keep_']").hasAttribute("data-turbo-permanent"))),
+      "a logo that recovered stopped being kept"
+  end
+
+  test "a visit fetches a sparkline again once its series has changed" do
+    visit root_path
+    expand_first_group
+    assert_selector "#{ACCOUNT_SPARKLINE_FRAME}[complete] svg path", minimum: 1
+    mark_drawn_sparklines
+
+    FreshSparklineVersions.salt = SecureRandom.hex(4)
+    visit_first_open_account
+
+    assert_no_selector "#{SPARKLINE_FRAME}[data-kept]", visible: :all
+    assert_selector "#{ACCOUNT_SPARKLINE_FRAME}[complete] svg path", minimum: 1
+  end
+
+  # A finished sync refreshes the page with a morph rather than a visit. Turbo
+  # never removes a permanent element during a morph, so a wrapper whose id
+  # the refreshed page no longer has would stay beside the new one.
+  test "a refresh after the series changed replaces each sparkline instead of adding one" do
+    visit root_path
+    expand_first_group
+    assert_selector "#{ACCOUNT_SPARKLINE_FRAME}[complete] svg path", minimum: 1
+    wrappers = sparkline_wrapper_count
+
+    2.times do
+      FreshSparklineVersions.salt = SecureRandom.hex(4)
+      morph_refresh
+      # The group totals sit in the summaries, on screen whatever the morph
+      # does to the groups' open state.
+      assert_selector "#{GROUP_SPARKLINE_FRAME}[complete] svg path", minimum: 1
+      assert_equal wrappers, sparkline_wrapper_count, "a refresh left the old sparklines beside the new ones"
+    end
+  end
+
+  test "a refresh with unchanged series keeps the sparklines drawn" do
+    visit root_path
+    expand_first_group
+    assert_selector "#{ACCOUNT_SPARKLINE_FRAME}[complete] svg path", minimum: 1
+    kept = mark_drawn_sparklines
+
+    morph_refresh
+
+    assert_equal kept, page.evaluate_script("document.querySelectorAll(#{"#{SPARKLINE_FRAME}[data-kept]".to_json}).length")
+  end
+
+  test "a sparkline that timed out is not carried to the next page" do
+    with_short_sparkline_timeout do
+      visit root_path
+
+      with_stalled_sparkline_responses do
+        expand_first_group
+        assert_selector "#{ACCOUNT_SPARKLINE_FRAME} p", text: BADGE_TEXT, minimum: 1
+
+        # While the responses are still held: once released they render over
+        # the badges, and no badge left would make this pass on nothing.
+        timed_out = page.evaluate_script(<<~JS)
+          (() => {
+            const frames = Array.from(document.querySelectorAll("#{ACCOUNT_SPARKLINE_FRAME}"))
+              .filter((frame) => frame.textContent.includes("#{BADGE_TEXT}"))
+            return { count: frames.length, permanent: frames.filter((frame) => frame.closest("[data-turbo-permanent]")).length }
+          })()
+        JS
+        assert_operator timed_out["count"], :>, 0
+        assert_equal 0, timed_out["permanent"], "a wrapper around a timed-out sparkline is still permanent"
+      end
+    end
+  end
+
+  # A request that failed outright never answers, so nothing renders over the
+  # badge. The refresh a finished sync triggers would otherwise make its
+  # wrapper permanent again and put the frame back on its placeholder for good.
+  test "a refresh with unchanged series fetches a sparkline that timed out again" do
+    with_short_sparkline_timeout do
+      visit root_path
+
+      with_broken_sparkline_responses(:server_error) do
+        expand_first_group
+        assert_selector "#{ACCOUNT_SPARKLINE_FRAME} p", text: BADGE_TEXT, minimum: 1, wait: SETTLE_WAIT_SECONDS
+        wait_for_fetched_frames
+      end
+      timed_out = page.evaluate_script(<<~JS)
+        Array.from(document.querySelectorAll("#{ACCOUNT_SPARKLINE_FRAME}"))
+          .filter((frame) => frame.offsetParent && frame.textContent.includes("#{BADGE_TEXT}")).map((frame) => frame.id)
+      JS
+      assert_not_empty timed_out
+
+      morph_refresh
+      expand_first_group unless page.evaluate_script(%(document.querySelector("#sidebar-scroll details").open))
+
+      page.document.synchronize(SETTLE_WAIT_SECONDS) do
+        stuck = page.evaluate_script(<<~JS)
+          #{timed_out.to_json}.filter((id) => !Array.from(document.querySelectorAll(`[id="${id}"]`)).some((frame) => frame.offsetParent && frame.querySelector("svg path") && !frame.textContent.includes("#{BADGE_TEXT}")))
+        JS
+        raise Capybara::ExpectationNotMet, "sparklines that timed out stayed undrawn after the refresh: #{stuck.inspect}" if stuck.any?
+      end
+    end
+  end
+
+  # In this sidebar the morph above replaces the timed-out frames, so that case
+  # passes either way; a frame the morph kept instead would stay on its
+  # placeholder, so the wrapper doesn't rely on being replaced.
+  test "a wrapper that dropped its permanence removes itself before a morph, even when the refreshed page has its id" do
+    visit root_path
+    expand_first_group
+    assert_selector "#{ACCOUNT_SPARKLINE_FRAME}[complete] svg path", minimum: 1
+
+    result = page.evaluate_script(<<~JS)
+      (() => {
+        const wrappers = Array.from(document.querySelectorAll("[id^='sparkline_keep_']")).filter((el) => el.offsetParent)
+        const [failed, kept] = wrappers
+        failed.removeAttribute("data-turbo-permanent")
+        const newBody = document.body.cloneNode(true)
+        document.dispatchEvent(new CustomEvent("turbo:before-render", { detail: { renderMethod: "morph", newBody } }))
+        return { failed: failed.isConnected, kept: kept.isConnected }
+      })()
+    JS
+
+    assert_not result["failed"], "a wrapper that lost its permanence stayed for the morph"
+    assert result["kept"], "a wrapper still permanent and still on the refreshed page was removed"
+  end
+
+  # Only a response that renders the frame ends the wait; one without it is as
+  # much a failed sparkline as a request that never returns. Each response has
+  # to arrive inside the window, otherwise the badge would be there before it
+  # and prove nothing about what the response does to the countdown.
+  test "an error response still raises the timeout badge" do
+    assert_broken_response_raises_badge :server_error
+  end
+
+  test "a response without the sparkline frame still raises the timeout badge" do
+    assert_broken_response_raises_badge :without_frame
   end
 
   private
@@ -130,8 +428,92 @@ class SidebarSparklinesTest < ApplicationSystemTestCase
       StalledSparklines.enabled = false
     end
 
+    def with_broken_sparkline_responses(mode)
+      BrokenSparklines.mode = mode
+      yield
+    ensure
+      BrokenSparklines.mode = nil
+    end
+
+    def assert_broken_response_raises_badge(mode)
+      stub_const(AccountsHelper, :SPARKLINE_FRAME_TIMEOUT_MS, RESPONSE_WINDOW_MS) do
+        visit root_path
+        record_account_sparkline_response_times
+
+        with_broken_sparkline_responses(mode) do
+          expand_first_group
+
+          assert_selector "#{ACCOUNT_SPARKLINE_FRAME} p", text: BADGE_TEXT, minimum: 1, wait: SETTLE_WAIT_SECONDS
+          assert_account_sparkline_responses_within RESPONSE_WINDOW_MS
+        end
+      end
+    end
+
+    def record_account_sparkline_response_times
+      page.execute_script(<<~JS)
+        const requestedAt = {}
+        window.sparklineResponseTimes = []
+        document.addEventListener("turbo:before-fetch-request", (event) => {
+          if (event.target.id.startsWith("sparkline_account_")) requestedAt[event.target.id] = performance.now()
+        })
+        document.addEventListener("turbo:before-fetch-response", (event) => {
+          if (event.target.id in requestedAt) window.sparklineResponseTimes.push(performance.now() - requestedAt[event.target.id])
+        })
+      JS
+    end
+
+    def assert_account_sparkline_responses_within(ms)
+      response_times = page.evaluate_script("window.sparklineResponseTimes")
+      assert_not_empty response_times
+      assert response_times.all? { |time| time < ms }, "Sparkline responses took #{response_times.map(&:round)} ms"
+    end
+
+    # Tags every drawn sparkline frame, so a frame on the next page can be told
+    # apart as the same element (carried over) or a new one.
+    def mark_drawn_sparklines
+      page.evaluate_script(<<~JS)
+        (() => {
+          const frames = document.querySelectorAll("#{SPARKLINE_FRAME}[complete]")
+          frames.forEach((frame) => { frame.dataset.kept = "1" })
+          return frames.length
+        })()
+      JS
+    end
+
+    def record_sparkline_requests
+      page.execute_script(<<~JS)
+        window.sparklineRequests = []
+        document.addEventListener("turbo:before-fetch-request", (event) => {
+          if (event.target.id.includes("sparkline")) window.sparklineRequests.push(event.target.id)
+        })
+      JS
+    end
+
+    def sparkline_wrapper_count
+      page.evaluate_script("document.querySelectorAll('[id^=sparkline_keep_]').length")
+    end
+
+    # What the sync toast does once a sync has finished: refresh the page in
+    # place, which the layout's turbo_refreshes_with turns into a morph.
+    def morph_refresh
+      page.execute_script(%(window.__morphed = false; document.addEventListener("turbo:morph", () => { window.__morphed = true }, { once: true }); Turbo.visit(location.href, { action: "replace" })))
+      Timeout.timeout(15) { sleep 0.05 until page.evaluate_script("window.__morphed") }
+    end
+
+    # A Turbo visit, unlike `visit`, which loads the page afresh.
+    def visit_first_open_account
+      find("#sidebar-scroll details[open] a[href^='/accounts/']", match: :first).click
+      assert_selector "#sidebar-scroll a[data-active-account]"
+    end
+
     def expand_first_group
       find("#sidebar-scroll details", match: :first).find("summary").click
+    end
+
+    # Turbo marks a frame `busy` only while its request is in flight, so this
+    # waits for real responses without treating unfetched lazy frames as late.
+    def wait_for_fetched_frames
+      assert_no_selector "#{SPARKLINE_FRAME}[busy]", visible: :all, wait: SETTLE_WAIT_SECONDS
     end
 
     # Sleeping is the assertion here: the badge is an absence, and an absence

@@ -1,7 +1,9 @@
 require "test_helper"
 
 class TradesControllerTest < ActionDispatch::IntegrationTest
-  include EntryableResourceInterfaceTest
+  include ActionView::RecordIdentifier
+  include EntryableResourceInterfaceTest, EntriesTestHelper
+  include GoalPledgeTestHelper
 
   setup do
     sign_in @user = users(:family_admin)
@@ -21,6 +23,22 @@ class TradesControllerTest < ActionDispatch::IntegrationTest
     # picker further down the page.
     assert_select "span.text-secondary.text-sm", text: I18n.t("trades.header.transfer")
     assert_select "span.text-secondary.text-sm", text: I18n.t("trades.header.buy"), count: 0
+  end
+
+  # A quote in the listing's currency was shown and netted against the trade's
+  # price as if both were in the trade's currency. 10 bought at 180 EUR, quoted
+  # at 200 USD, USD->EUR 0.9: the position is worth what it cost.
+  test "the header converts a quote in another currency to the trade's" do
+    @entry.update!(amount: 1800, currency: "EUR")
+    @entry.trade.update!(qty: 10, price: 180, fee: 0, currency: "EUR")
+    Security.any_instance.stubs(:current_price).returns(Money.new(200, "USD"))
+    ExchangeRate.create!(from_currency: "USD", to_currency: "EUR", date: Date.current, rate: 0.9)
+
+    get trade_url(@entry)
+
+    assert_response :success
+    assert_select "dd", text: /#{Regexp.escape(Money.new(180, "EUR").format)}\s*\(#{Regexp.escape(Money.new(200, "USD").format)}\)/
+    assert_select "dd p", text: I18n.t("shared.trend_change.no_change")
   end
 
   test "the German header localizes supported provider activity labels" do
@@ -536,7 +554,248 @@ class TradesControllerTest < ActionDispatch::IntegrationTest
     assert @entry.protected_from_sync?, "Entry should be protected from sync"
   end
 
+  test "turbo stream update replaces the entry row with the compact partial when compact preview is enabled" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => true))
+
+    patch trade_url(@entry), params: {
+      entry: {
+        currency: "USD",
+        entryable_attributes: {
+          id: @entry.entryable_id,
+          qty: 50,
+          price: 25
+        }
+      }
+    }, as: :turbo_stream
+
+    assert_response :success
+    assert_match(/turbo-stream/, response.content_type)
+    doc = Nokogiri::HTML::Document.parse(response.body)
+    entry_row_stream = doc.css("turbo-stream[action='replace']").find { |s| s["target"] == dom_id(@entry) }
+    assert entry_row_stream.present?, "Expected a turbo-stream replacing the entry row"
+    # Compact partial renders a flex row; the full-size partial renders a grid-cols-12 row instead
+    assert_no_match(/grid-cols-12/, entry_row_stream.to_html)
+  end
+
+  test "turbo stream update replaces the entry row with the full-size partial when compact preview is disabled" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => false, "transactions_compact" => true, "transactions_group_by_date" => true))
+
+    patch trade_url(@entry), params: {
+      entry: {
+        currency: "USD",
+        entryable_attributes: {
+          id: @entry.entryable_id,
+          qty: 50,
+          price: 25
+        }
+      }
+    }, as: :turbo_stream
+
+    assert_response :success
+    doc = Nokogiri::HTML::Document.parse(response.body)
+    entry_row_stream = doc.css("turbo-stream[action='replace']").find { |s| s["target"] == dom_id(@entry) }
+    assert entry_row_stream.present?, "Expected a turbo-stream replacing the entry row"
+    assert_match(/grid-cols-12/, entry_row_stream.to_html)
+  end
+
+  test "turbo_stream update renders balance from explicit view_ctx/is_filtered params without referer" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false))
+
+    patch trade_url(@entry), params: {
+      view_ctx: "account",
+      is_filtered: "0",
+      entry: {
+        currency: "USD",
+        entryable_attributes: {
+          id: @entry.entryable_id,
+          qty: 50,
+          price: 25
+        }
+      }
+    }, as: :turbo_stream
+
+    assert_response :success
+    assert_match(/w-30 shrink-0 justify-end/, turbo_stream_row_html(@entry),
+      "unfiltered account context should render the running balance")
+  end
+
+  test "turbo_stream update hides balance for explicit filtered or global context" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false))
+
+    patch trade_url(@entry), params: {
+      view_ctx: "account",
+      is_filtered: "1",
+      entry: {
+        currency: "USD",
+        entryable_attributes: {
+          id: @entry.entryable_id,
+          qty: 50,
+          price: 25
+        }
+      }
+    }, as: :turbo_stream
+
+    assert_response :success
+    assert_no_match(/w-30 shrink-0 justify-end/, turbo_stream_row_html(@entry))
+    row_links = Nokogiri::HTML.fragment(turbo_stream_row_html(@entry)).css("a").map { |link| link["href"] }
+    assert_includes row_links, entry_path(@entry, view_ctx: "account", is_filtered: true)
+
+    patch trade_url(@entry), params: {
+      view_ctx: "global",
+      is_filtered: "0",
+      entry: {
+        currency: "USD",
+        entryable_attributes: {
+          id: @entry.entryable_id,
+          qty: 60,
+          price: 25
+        }
+      }
+    }, headers: { "Referer" => account_url(@entry.account) }, as: :turbo_stream
+
+    assert_response :success
+    assert_no_match(/w-30 shrink-0 justify-end/, turbo_stream_row_html(@entry),
+      "explicit global context must win over an account referer")
+  end
+
+  test "trade show drawer renders explicit view_ctx/is_filtered hidden fields" do
+    get trade_url(@entry, view_ctx: "account", is_filtered: "1")
+
+    assert_response :success
+    assert_select "input[type='hidden'][name='view_ctx'][value='account']", minimum: 1
+    assert_select "input[type='hidden'][name='is_filtered'][value='1']", minimum: 1
+    assert_select "input#view_ctx", count: 0
+    assert_select "input#is_filtered", count: 0
+  end
+
+  test "compact trade row mobile subtitle has no orphan bullet" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false))
+
+    patch trade_url(@entry), params: {
+      view_ctx: "global",
+      is_filtered: "0",
+      entry: {
+        currency: "USD",
+        entryable_attributes: {
+          id: @entry.entryable_id,
+          qty: 50,
+          price: 25
+        }
+      }
+    }, as: :turbo_stream
+
+    assert_response :success
+    doc = Nokogiri::HTML.fragment(turbo_stream_row_html(@entry))
+    mobile_spans = doc.css("span[class*='compact-table:hidden']")
+    assert mobile_spans.any?, "Expected a mobile-only subtitle span in the compact trade row"
+    mobile_spans.each do |span|
+      assert_no_match(/•/, span.text, "Orphan bullet in mobile trade subtitle")
+    end
+  end
+
+  test "compact trade row supports whole-row click" do
+    @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => true, "transactions_compact" => true, "transactions_group_by_date" => false))
+
+    patch trade_url(@entry), params: {
+      view_ctx: "global",
+      is_filtered: "0",
+      entry: {
+        currency: "USD",
+        entryable_attributes: {
+          id: @entry.entryable_id,
+          qty: 50,
+          price: 25
+        }
+      }
+    }, as: :turbo_stream
+
+    assert_response :success
+    doc = Nokogiri::HTML.fragment(turbo_stream_row_html(@entry))
+    row = doc.at_css("div[data-controller='clickable-row']")
+    assert row.present?, "Expected the compact trade row to carry the clickable-row controller"
+    assert row.at_css("a[data-clickable-row-target='link']").present?, "Expected the trade name link to be the clickable-row target"
+  end
+
+  test "the drawer offers the lot choice only on a fifo sale" do
+    account, buy, sale = lot_choice_account
+    lot_select = "select[name='entry[entryable_attributes][lot_source_entry_id]']"
+
+    get trade_url(sale)
+    assert_select lot_select, count: 0
+
+    account.update!(cost_basis_method: "fifo")
+    get trade_url(sale)
+    assert_select "#{lot_select} option[value='#{buy.id}']", count: 1
+
+    get trade_url(buy)
+    assert_select lot_select, count: 0
+  end
+
+  test "naming a lot on a sale saves it and restates the account" do
+    account, buy, sale = lot_choice_account(method: "fifo")
+
+    patch trade_url(sale), params: { entry: { entryable_attributes: { id: sale.entryable_id, lot_source_entry_id: buy.id } } }
+
+    assert_redirected_to account_url(account)
+    assert_enqueued_with job: SyncJob
+    assert_equal buy.id, sale.trade.reload.lot_source_entry_id
+  end
+
+  test "naming another account's lot on a sale is refused" do
+    _account, _buy, sale = lot_choice_account(method: "fifo")
+    other = families(:empty).accounts.create!(name: "Other", balance: 0, currency: "USD", accountable: Investment.new, cost_basis_method: "fifo")
+    theirs = create_trade(sale.trade.security, account: other, qty: 5, price: 10, date: 3.days.ago.to_date)
+
+    patch trade_url(sale), params: { entry: { entryable_attributes: { id: sale.entryable_id, lot_source_entry_id: theirs.id } } }
+
+    assert_response :unprocessable_entity
+    assert_nil sale.trade.reload.lot_source_entry_id
+  end
+
+  # we-promise/sure#4226: a deposit with no "from" account books a standalone
+  # inflow on the investment account, which must resolve its pledge.
+  test "an unlinked deposit resolves the account's open transfer pledge" do
+    investment = accounts(:investment)
+    pledge = open_transfer_pledge(investment, amount: 250)
+
+    post trades_url(account_id: investment.id), params: {
+      model: { type: "deposit", date: Date.current, amount: 250, currency: "USD" }
+    }
+
+    entry = investment.entries.order(:created_at).last
+    assert_equal entry.transaction.id, pledge.reload.matched_transaction_id
+  end
+
+  test "an unlinked withdrawal leaves the pledge open" do
+    investment = accounts(:investment)
+    pledge = open_transfer_pledge(investment, amount: 250)
+
+    post trades_url(account_id: investment.id), params: {
+      model: { type: "withdrawal", date: Date.current, amount: 250, currency: "USD" }
+    }
+
+    assert_equal "open", pledge.reload.status
+  end
+
   private
+    # Extracts the entry-row turbo-stream's inner HTML from an update response,
+    # so compact-row rendering (e.g. the running-balance column) can be asserted.
+    def turbo_stream_row_html(entry)
+      doc = Nokogiri::HTML::Document.parse(response.body)
+      stream = doc.css("turbo-stream[action='replace']").find { |s| s["target"] == dom_id(entry) }
+      assert stream.present?, "Expected a turbo-stream replacing the entry row"
+      stream.to_html
+    end
+
+    def lot_choice_account(method: "average")
+      account = accounts(:investment)
+      account.update!(cost_basis_method: method)
+      security = Security.create!(ticker: "LOTN", name: "LOTN")
+      buy = create_trade(security, account: account, qty: 40, price: 20, date: 3.days.ago.to_date)
+      sale = create_trade(security, account: account, qty: -10, price: 25, date: 1.day.ago.to_date)
+      [ account, buy, sale ]
+    end
+
     # family_member gets the investment account with full control; fixtures
     # already share depository with full control and credit_card read-only,
     # and leave connected private to family_admin.

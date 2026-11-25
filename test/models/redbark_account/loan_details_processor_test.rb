@@ -80,6 +80,21 @@ class RedbarkAccount::LoanDetailsProcessorTest < ActiveSupport::TestCase
     assert_empty schedule, "a rate that had not moved was recorded as a change"
   end
 
+  # The processor's loan can be loaded before another writer records the same
+  # rate. The schedule lock reloads it, so the decision sees that rate in force;
+  # deciding on the stale copy would add a second row for a rate already held.
+  test "a rate another writer recorded after the loan was loaded is not recorded again" do
+    # The processor reads the loan through this cached association.
+    @redbark_account.current_account.accountable
+    Loan.find(@loan.id).enrich_attributes({ variable_rate_schedule: { "2026-03-01" => "7" } }, source: "redbark")
+    detail lendingRate: "0.07"
+
+    process
+
+    assert_equal({ "2026-03-01" => BigDecimal("7") }, rates,
+                 "the rate was decided on a loan loaded before the concurrent write")
+  end
+
   # Rows 4 and 10: a fixed loan's rate does not move, so a bank disagreeing is
   # something to surface rather than something to write.
   test "a different rate on a fixed loan writes nothing and is logged" do
@@ -286,6 +301,17 @@ class RedbarkAccount::LoanDetailsProcessorTest < ActiveSupport::TestCase
     assert_equal({ "2026-09-21" => BigDecimal("6.75") }, rates)
   end
 
+  # The syncer dates a sync in the family's zone. A snapshot stamped at 19:00
+  # UTC on the 20th was fetched on the 21st in Sydney, so it is this sync's.
+  test "a snapshot is judged fresh on the family's calendar" do
+    @family.update!(timezone: "Australia/Sydney")
+    detail lendingRate: "0.0675", fetched_at: Time.utc(2026, 9, 20, 19, 0, 0)
+
+    process
+
+    assert_equal({ "2026-09-21" => BigDecimal("6.75") }, rates)
+  end
+
   # A bank reporting an end date centuries out is reporting a placeholder. The
   # term is not stored, and the rate still lands.
   test "an implausible term is not stored and does not cost the loan its rate" do
@@ -469,6 +495,25 @@ class RedbarkAccount::LoanDetailsProcessorTest < ActiveSupport::TestCase
       process
     end
     assert_empty schedule
+  end
+
+  # The bound is checked on the percentage before it is rounded to three
+  # places, which would carry a reading just outside it onto 0 or 100.
+  test "a rate just outside the bound is not rounded into it" do
+    [ "-0.000004", "1.000004" ].each do |reported|
+      @loan.update_columns(variable_rate_schedule: {})
+      detail lendingRate: reported
+      assert_difference -> { DebugLogEntry.count }, 1, "#{reported} was not logged" do
+        process
+      end
+      assert_empty schedule, "#{reported} was recorded"
+    end
+  end
+
+  test "a rate just inside the ceiling rounds onto it and is recorded" do
+    detail lendingRate: "0.999996"
+    process
+    assert_equal({ "2026-09-21" => BigDecimal(100) }, rates)
   end
 
   # Row 9: the detected row reaches the engine, for a cut as well as a rise.

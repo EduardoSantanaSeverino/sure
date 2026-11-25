@@ -60,6 +60,110 @@ class IndexaCapitalItemsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Updated Name", @item.reload.name
   end
 
+  test "the re-rendered panel leaves the API token and password fields empty instead of echoing them" do
+    @item.update!(password: "ix-stored-password-7a2d")
+
+    patch indexa_capital_item_url(@item), params: { indexa_capital_item: { name: "Updated Name" } }, as: :turbo_stream
+
+    %w[api_token password].each do |field|
+      assert_select "form[action=?] input[name=?]", indexa_capital_item_path(@item), "indexa_capital_item[#{field}]" do |inputs|
+        assert_nil inputs.first["value"], "#{field} should not be rendered"
+      end
+    end
+    assert_not_includes response.body, "test_api_token_123"
+    assert_not_includes response.body, "ix-stored-password-7a2d"
+  end
+
+  test "update with the API token and password left blank keeps both" do
+    @item.update!(password: "ix-stored-password-7a2d")
+
+    patch indexa_capital_item_url(@item),
+          params: { indexa_capital_item: { name: "Updated Name", api_token: "", password: "" } },
+          as: :turbo_stream
+
+    @item.reload
+    assert_equal "Updated Name", @item.name
+    assert_equal "test_api_token_123", @item.api_token
+    assert_equal "ix-stored-password-7a2d", @item.password
+  end
+
+  test "update with a new API token replaces only the token" do
+    @item.update!(password: "ix-stored-password-7a2d")
+
+    patch indexa_capital_item_url(@item),
+          params: { indexa_capital_item: { api_token: "ix-rotated-token", password: "" } },
+          as: :turbo_stream
+
+    @item.reload
+    assert_equal "ix-rotated-token", @item.api_token
+    assert_equal "ix-stored-password-7a2d", @item.password
+  end
+
+  test "update with a new password and a blank API token switches to username and password" do
+    assert_equal "test_api_token_123", @item.api_token
+
+    patch indexa_capital_item_url(@item),
+          params: { indexa_capital_item: { api_token: "", username: "new@example.com", document: "87654321B", password: "ix-new-password" } },
+          as: :turbo_stream
+
+    @item.reload
+    assert_nil @item.api_token
+    assert_equal "ix-new-password", @item.password
+    assert_equal "new@example.com", @item.username
+  end
+
+  test "update with a new password but no username or document keeps the API token" do
+    [
+      { username: "", document: "" },
+      { username: "new@example.com", document: "" }
+    ].each do |partial|
+      patch indexa_capital_item_url(@item),
+            params: { indexa_capital_item: { api_token: "", password: "ix-new-password" }.merge(partial) },
+            as: :turbo_stream
+
+      assert_response :success
+      @item.reload
+      assert_equal "test_api_token_123", @item.api_token, "token cleared for #{partial.inspect}"
+      assert @item.credentials_configured?
+    end
+  end
+
+  test "update with a new password keeps the API token when the stored username is cleared" do
+    @item.update!(username: "stored@example.com", document: "12345678A")
+
+    patch indexa_capital_item_url(@item),
+          params: { indexa_capital_item: { api_token: "", username: "", document: "12345678A", password: "ix-new-password" } },
+          as: :turbo_stream
+
+    @item.reload
+    assert_equal "test_api_token_123", @item.api_token
+    assert_equal "", @item.username
+  end
+
+  test "update without a new password keeps the API token even with full stored credentials" do
+    @item.update!(username: "stored@example.com", document: "12345678A", password: "ix-stored-password-7a2d")
+
+    patch indexa_capital_item_url(@item),
+          params: { indexa_capital_item: { name: "Renamed" } },
+          as: :turbo_stream
+
+    @item.reload
+    assert_equal "Renamed", @item.name
+    assert_equal "test_api_token_123", @item.api_token
+  end
+
+  test "update with a new password switches to the stored username and document" do
+    @item.update!(username: "stored@example.com", document: "12345678A")
+
+    patch indexa_capital_item_url(@item),
+          params: { indexa_capital_item: { api_token: "", password: "ix-new-password" } },
+          as: :turbo_stream
+
+    @item.reload
+    assert_nil @item.api_token
+    assert @item.credentials_configured?
+  end
+
   test "invalid create from the page shows the error in the panel" do
     post indexa_capital_items_url,
          params: { indexa_capital_item: { name: "New Connection" } },
@@ -189,5 +293,76 @@ class IndexaCapitalItemsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "turbo-frame#modal turbo-stream[action=redirect][target=?]", settings_providers_path
     assert_equal I18n.t("indexa_capital_items.select_accounts.no_credentials_configured"), flash[:alert]
+  end
+
+  test "setup_accounts does not offer an ignored account" do
+    indexa_capital_accounts(:pension_plan).ignore!
+
+    get setup_accounts_indexa_capital_item_url(@item)
+
+    assert_response :success
+    assert_select "input[name='account_ids[]'][value=?]", indexa_capital_accounts(:mutual_fund).id
+    assert_select "input[name='account_ids[]'][value=?]", indexa_capital_accounts(:pension_plan).id, count: 0
+  end
+
+  test "complete_account_setup ignores the accounts the user left unchecked" do
+    mutual_fund = indexa_capital_accounts(:mutual_fund)
+    pension_plan = indexa_capital_accounts(:pension_plan)
+
+    assert_difference "Account.count", 1 do
+      post complete_account_setup_indexa_capital_item_url(@item), params: {
+        setup_account_ids: [ mutual_fund.id, pension_plan.id ],
+        account_ids: [ mutual_fund.id ]
+      }
+    end
+
+    assert_redirected_to accounts_path
+    assert_not_nil mutual_fund.reload.current_account
+    assert_not mutual_fund.ignored?
+    assert pension_plan.reload.ignored?
+    assert_nil pension_plan.current_account
+  end
+
+  test "complete_account_setup with every account unchecked ignores them all" do
+    ids = [ indexa_capital_accounts(:mutual_fund).id, indexa_capital_accounts(:pension_plan).id ]
+    @item.update!(pending_account_setup: true)
+
+    assert_no_difference "Account.count" do
+      post complete_account_setup_indexa_capital_item_url(@item), params: { setup_account_ids: ids }
+    end
+
+    assert_redirected_to accounts_path
+    assert_equal I18n.t("indexa_capital_items.complete_account_setup.all_skipped"), flash[:notice]
+    assert @item.indexa_capital_accounts.where(id: ids).all?(&:ignored?)
+    assert_not @item.reload.pending_account_setup?
+  end
+
+  test "select accounts does not fetch or refresh an ignored account" do
+    pension_plan = indexa_capital_accounts(:pension_plan)
+    pension_plan.ignore!
+    Provider::IndexaCapital.any_instance.stubs(:list_accounts).returns([
+      { account_number: "LPYH3MCQ", name: "Mutual Fund", type: "mutual", status: "active", currency: "EUR" },
+      { account_number: "DCU8HWEP", name: "Renamed", type: "pension", status: "active", currency: "EUR" }
+    ])
+    Provider::IndexaCapital.any_instance.expects(:get_account_balance).with(account_number: "LPYH3MCQ").returns(100)
+    Provider::IndexaCapital.any_instance.expects(:get_account_balance).with(account_number: "DCU8HWEP").never
+
+    assert_no_changes -> { pension_plan.reload.attributes } do
+      get select_accounts_indexa_capital_items_url
+    end
+
+    assert_response :success
+    assert_equal 100, indexa_capital_accounts(:mutual_fund).reload.current_balance
+  end
+
+  test "linking an ignored account to an existing Sure account stops ignoring it" do
+    pension_plan = indexa_capital_accounts(:pension_plan)
+    pension_plan.ignore!
+    manual_account = Account.create!(family: @family, name: "Manual Pension", balance: 0, currency: "EUR", accountable: Investment.new)
+
+    post link_existing_account_indexa_capital_items_url, params: { account_id: manual_account.id, indexa_capital_account_id: pension_plan.id }
+
+    assert_equal manual_account, pension_plan.reload.current_account
+    assert_not pension_plan.ignored?
   end
 end

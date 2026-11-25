@@ -1,8 +1,56 @@
 require "test_helper"
 
 class Provider::TwelveDataTest < ActiveSupport::TestCase
+  include ProviderTestHelper
+
   setup do
     @provider = Provider::TwelveData.new("test_api_key")
+  end
+
+  # ================================
+  #            Usage Tests
+  # ================================
+
+  def stub_usage(body)
+    mock_response = mock
+    mock_response.stubs(:body).returns(body.to_json)
+
+    @provider.stubs(:client).returns(mock_client = mock)
+    mock_client.stubs(:get).returns(mock_response)
+  end
+
+  test "usage reports utilization as a percentage of the daily limit" do
+    stub_usage("plan_category" => "basic", "daily_usage" => 400, "plan_daily_limit" => 800)
+
+    result = @provider.usage
+
+    assert result.success?
+    assert_equal 400, result.data.used
+    assert_equal 800, result.data.limit
+    assert_equal 50.0, result.data.utilization
+  end
+
+  test "usage keeps a fractional utilization below one percent" do
+    stub_usage("plan_category" => "basic", "daily_usage" => 1, "plan_daily_limit" => 800)
+
+    assert_equal 0.1, @provider.usage.data.utilization
+  end
+
+  test "usage fails when the daily limit is zero" do
+    stub_usage("plan_category" => "basic", "daily_usage" => 5, "plan_daily_limit" => 0)
+
+    result = @provider.usage
+
+    assert_not result.success?
+    assert_instance_of Provider::TwelveData::Error, result.error
+  end
+
+  test "usage fails when daily_usage is missing or not a number" do
+    [ {}, { "daily_usage" => "abc" } ].each do |figures|
+      stub_usage({ "plan_category" => "basic", "plan_daily_limit" => 800 }.merge(figures))
+
+      assert_not @provider.usage.success?
+    end
   end
 
   # ================================
@@ -85,6 +133,36 @@ class Provider::TwelveDataTest < ActiveSupport::TestCase
     assert_instance_of Provider::TwelveData::RateLimitError, result.error
   end
 
+  { 400 => Faraday::BadRequestError, 404 => Faraday::ResourceNotFound }.each do |status, error_class|
+    test "falls back to the cross API when time_series rejects the pair with HTTP #{status}" do
+      error_body = {
+        "code" => status,
+        "message" => "**symbol** or **figi** parameter is missing or invalid.",
+        "status" => "error"
+      }.to_json
+      cross_response = mock
+      cross_response.stubs(:body).returns({
+        "values" => [ { "datetime" => "2026-10-28", "close" => "0.0102" } ],
+        "status" => "ok"
+      }.to_json)
+
+      @provider.stubs(:throttle_request)
+      mock_client = mock
+      mock_client.expects(:get).with("https://api.twelvedata.com/time_series")
+        .raises(error_class.new("the server responded with status #{status}", { status: status, body: error_body }))
+      mock_client.expects(:get).with("https://api.twelvedata.com/time_series/cross").returns(cross_response)
+      @provider.stubs(:client).returns(mock_client)
+
+      result = @provider.fetch_exchange_rates(from: "KGS", to: "EUR", start_date: Date.new(2026, 10, 28), end_date: Date.new(2026, 10, 28))
+
+      assert result.success?
+      assert_equal 1, result.data.size
+      assert_equal "KGS", result.data.first.from
+      assert_equal "EUR", result.data.first.to
+      assert_equal "0.0102", result.data.first.rate
+    end
+  end
+
   # ================================
   #   Error Transformer Tests
   # ================================
@@ -114,6 +192,32 @@ class Provider::TwelveDataTest < ActiveSupport::TestCase
 
     assert_not result.success?
     assert_instance_of Provider::TwelveData::Error, result.error
+  end
+
+  test "default_error_transformer surfaces the real API message from a raised HTTP error body" do
+    body = {
+      "code" => 404,
+      "message" => "This endpoint is not available for this symbol/exchange combination, available starting with Grow plan",
+      "status" => "error"
+    }.to_json
+    error = Faraday::ResourceNotFound.new("the server responded with status 404 for GET https://api.twelvedata.com/time_series", { status: 404, body: body })
+
+    result = @provider.send(:with_provider_response) { raise error }
+
+    assert_not result.success?
+    assert_instance_of Provider::TwelveData::Error, result.error
+    assert_includes result.error.message, "available starting with Grow plan"
+    assert Provider::TwelveData.plan_upgrade_required?(result.error.message)
+    assert_equal "Grow", Provider::TwelveData.extract_required_plan(result.error.message)
+  end
+
+  test "default_error_transformer falls back to the generic Faraday message when the body isn't JSON" do
+    error = Faraday::ResourceNotFound.new("the server responded with status 404 for GET https://api.twelvedata.com/time_series", { status: 404, body: "<html>Not Found</html>" })
+
+    result = @provider.send(:with_provider_response) { raise error }
+
+    assert_not result.success?
+    assert_equal error.message, result.error.message
   end
 
   # ================================
@@ -266,5 +370,62 @@ class Provider::TwelveDataTest < ActiveSupport::TestCase
     ensure
       store.delete(minute_key)
     end
+  end
+
+  test "client sets explicit open and read timeouts" do
+    options = @provider.send(:client).options
+
+    assert_equal 5, options.open_timeout
+    assert_equal 20, options.timeout
+  end
+
+  test "a timed-out request returns a failed response with the provider's Error" do
+    @provider.stubs(:throttle_request)
+    Faraday::Retry::Middleware.any_instance.stubs(:sleep)
+    search = stub_request(:get, %r{\Ahttps://api\.twelvedata\.com/symbol_search}).to_timeout
+    errors = capture_transformed_errors(@provider)
+
+    response = @provider.search_securities("TEST")
+
+    assert_not response.success?
+    assert_instance_of Provider::TwelveData::Error, response.error
+    assert_requested search, times: 4
+    assert_kind_of Faraday::ConnectionFailed, errors.last
+    assert_kind_of Net::OpenTimeout, errors.last.wrapped_exception
+  end
+
+  test "a read timeout is retried and returns a failed response with the provider's Error" do
+    @provider.stubs(:throttle_request)
+    Faraday::Retry::Middleware.any_instance.stubs(:sleep)
+    search = stub_request(:get, %r{\Ahttps://api\.twelvedata\.com/symbol_search}).to_raise(Net::ReadTimeout)
+    errors = capture_transformed_errors(@provider)
+
+    response = @provider.search_securities("TEST")
+
+    assert_not response.success?
+    assert_instance_of Provider::TwelveData::Error, response.error
+    assert_requested search, times: 4
+    assert_kind_of Faraday::TimeoutError, errors.last
+  end
+
+  test "time_series history requests get a longer read timeout than the client default" do
+    @provider.stubs(:throttle_request)
+    values = { "values" => [ { "datetime" => "2026-01-02", "close" => "1.5" } ], "meta" => { "currency" => "USD" } }.to_json
+    stub_request(:get, %r{\Ahttps://api\.twelvedata\.com/time_series\?}).to_return(status: 200, body: values)
+    # A pair time_series can't serve falls through to time_series/cross
+    stub_request(:get, %r{\Ahttps://api\.twelvedata\.com/time_series\?})
+      .with(query: hash_including("symbol" => "USD/ZZZ")).to_return(status: 200, body: {}.to_json)
+    stub_request(:get, %r{\Ahttps://api\.twelvedata\.com/time_series/cross}).to_return(status: 200, body: values)
+    stub_request(:get, %r{\Ahttps://api\.twelvedata\.com/symbol_search}).to_return(status: 200, body: { "data" => [] }.to_json)
+    timeouts = capture_request_timeouts(@provider)
+
+    @provider.fetch_security_prices(symbol: "AAPL", exchange_operating_mic: "XNAS", start_date: Date.new(2026, 1, 1), end_date: Date.new(2026, 1, 2))
+    @provider.fetch_exchange_rates(from: "USD", to: "EUR", start_date: Date.new(2026, 1, 1), end_date: Date.new(2026, 1, 2))
+    @provider.fetch_exchange_rates(from: "USD", to: "ZZZ", start_date: Date.new(2026, 1, 1), end_date: Date.new(2026, 1, 2))
+    @provider.search_securities("AAPL")
+
+    assert_requested :get, %r{\Ahttps://api\.twelvedata\.com/time_series/cross}, times: 1
+    # prices, the EUR pair, the ZZZ pair and its cross fallback, then search
+    assert_equal [ 60, 60, 60, 60, 20 ], timeouts
   end
 end

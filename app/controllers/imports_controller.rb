@@ -1,4 +1,5 @@
 class ImportsController < ApplicationController
+  include ViewableImports
   include SettingsHelper
 
   before_action :set_import, only: %i[show update publish destroy revert apply_template cancel summary]
@@ -37,6 +38,11 @@ class ImportsController < ApplicationController
   end
 
   def publish
+    # A failed import can stop being publishable, for example when a Monarch
+    # destination gained trades. The import page then sends it back to the
+    # step that needs a new choice.
+    return redirect_to import_path(@import) if @import.failed? && !@import.publishable?
+
     @import.publish_later
 
     redirect_to import_path(@import), notice: t(".started")
@@ -61,7 +67,7 @@ class ImportsController < ApplicationController
   end
 
   def index
-    @pagy, @imports = pagy(Current.family.imports.where(type: Import::TYPES).ordered, limit: safe_per_page)
+    @pagy, @imports = pagy(viewable_imports.where(type: Import::TYPES).ordered, limit: safe_per_page)
     @breadcrumbs = [
       [ t("breadcrumbs.home"), root_path ],
       [ t("breadcrumbs.imports"), imports_path ]
@@ -72,7 +78,7 @@ class ImportsController < ApplicationController
   end
 
   def new
-    @pending_import = Current.family.imports.ordered.pending.first
+    @pending_import = viewable_imports.ordered.pending.first
     @document_upload_extensions = document_upload_supported_extensions
   end
 
@@ -130,7 +136,9 @@ class ImportsController < ApplicationController
 
       # Stream reading is not fully applicable here as we store the raw string in the DB,
       # but we have validated size beforehand to prevent memory exhaustion from massive files.
-      import.update!(raw_file_str: file.read)
+      import.raw_file_str = file.read
+      import.preset_for_uploaded_csv
+      import.save!
 
       redirect_to import_configuration_path(import), notice: t("imports.create.csv_uploaded")
     else
@@ -142,7 +150,11 @@ class ImportsController < ApplicationController
 
   def show
     unless @import.requires_csv_workflow?
-      redirect_to import_upload_path(@import), alert: t("imports.show.finalize_upload") unless @import.uploaded?
+      if !@import.uploaded?
+        redirect_to import_upload_path(@import), alert: t("imports.show.finalize_upload")
+      elsif @import.is_a?(MonarchImport) && (@import.pending? || @import.failed?) && !@import.publishable?
+        redirect_to import_configuration_path(@import), alert: (@import.failed? && @import.error.presence) || t("imports.show.finalize_mappings")
+      end
       return
     end
 
@@ -176,8 +188,7 @@ class ImportsController < ApplicationController
 
   private
     def set_import
-      @import = Current.family.imports.includes(:account, :account_statement).find(params[:id])
-      raise ActiveRecord::RecordNotFound if @import.account_statement.present? && !@import.account_statement.viewable_by?(Current.user)
+      @import = viewable_imports.includes(:account, :account_statement).find(params[:id])
     end
 
     def import_params
@@ -250,6 +261,12 @@ class ImportsController < ApplicationController
     end
 
     def create_document_import(file)
+      availability = Ai.availability(:embed, family: Current.family, user: Current.user)
+      unless availability.available?
+        redirect_to new_import_path, alert: availability.message_for(Current.user)
+        return
+      end
+
       adapter = VectorStore.adapter
       unless adapter
         redirect_to new_import_path, alert: t("imports.create.document_provider_not_configured")
@@ -293,10 +310,15 @@ class ImportsController < ApplicationController
     end
 
     def document_upload_supported_extensions
-      adapter = VectorStore.adapter
+      adapter = document_store
       return [] unless adapter
 
       adapter.supported_extensions.map(&:downcase).uniq.sort
+    end
+
+    # Nil when `embed` isn't available, or when its store can't be built (pgvector without its extension).
+    def document_store
+      VectorStore.adapter if Ai.available?(:embed, family: Current.family, user: Current.user)
     end
 
     def document_upload_request?

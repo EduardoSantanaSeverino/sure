@@ -64,12 +64,24 @@ A transaction response includes:
 ```json
 {
   "id": "uuid",
+  "entry_id": "uuid",
   "date": "2024-01-15",
   "amount": "$75.50",
+  "amount_cents": 7550,
+  "signed_amount_cents": -7550,
+  "amount_decimal": "75.5",
   "currency": "USD",
   "name": "Grocery shopping",
   "notes": "Weekly groceries",
   "classification": "expense",
+  "kind": "standard",
+  "excluded": false,
+  "split_parent": false,
+  "investment_activity_label": null,
+  "provider_type": null,
+  "security_id": null,
+  "exchange_rate": null,
+  "amount_currency": "USD",
   "account": {
     "id": "uuid",
     "name": "Checking Account",
@@ -98,6 +110,33 @@ A transaction response includes:
   "updated_at": "2024-01-15T10:30:00Z"
 }
 ```
+
+### Amounts, kind and exclusion
+
+| Field | Description |
+| --- | --- |
+| `amount` | Formatted for display and rounded to the currency's precision. Don't parse it. |
+| `amount_cents` / `signed_amount_cents` | Integer minor units, also rounded. |
+| `amount_decimal` | The exact stored amount as an unrounded decimal string (for example `"12.3456"`), independent of locale. Positive is an outflow, negative an inflow. Use it when the amount has to match exactly, such as the split amounts sent to `POST /api/v1/transactions/{id}/split`. |
+| `kind` | One of `standard`, `funds_movement`, `cc_payment`, `loan_payment`, `one_time`, `investment_contribution`. Budgets and reports count `loan_payment` as an expense whatever the sign of its amount, and leave `funds_movement`, `cc_payment` and `one_time` out. `investment_contribution` also counts as an expense when the family counts investment contributions as spending (the default); when that setting is off it is reported as invested and left out of spending and income. `classification` only follows the amount's sign. |
+| `excluded` | `true` when the transaction is left out of budget and report totals. |
+| `split_parent` | `true` when the transaction has been split. Splitting a transaction marks it excluded, and its split children carry the amount. |
+
+### Investment activity and provider fields
+
+These are `null` on most transactions. They are set on brokerage cash rows, such as dividends, interest, fees and withholding tax, by the providers that record them.
+
+| Field | Description |
+| --- | --- |
+| `investment_activity_label` | The investment activity of the row, such as `Dividend`, `Interest` or `Fee`. |
+| `provider_type` | The importing provider's type for the row, for example IBKR's `"Withholding Tax"`. Use it to tell rows apart that share a label. IBKR, Trading 212, Wise, Akahu and Kraken store the provider's own type. For CoinSpot, Sure sets it from the kind of movement, such as `"receive"` or `"send"`. Only this value is exposed; the provider's raw payload is not. |
+| `security_id` | The id of the Sure security the row relates to, such as the one that paid a dividend, or `null`. `GET /api/v1/securities/{id}` finds it only when one of your accounts holds or has traded that security; otherwise that lookup returns 404. |
+| `exchange_rate` | The rate from the transaction's currency to the account's currency stored on the row, such as one reported by the provider. `null` when none is stored, and when the transaction is in the account's currency, since no conversion applies. |
+| `amount_currency` | The currency of the amount. On a transaction it is always the same as `currency`, which `exchange_rate` converts from. |
+
+### Linking to a transaction
+
+`id` identifies the transaction in the API. Web routes for a single transaction take the id of its entry instead, so use `entry_id` to link into the app, for example `/transactions/{entry_id}`.
 
 ## Creating transactions
 

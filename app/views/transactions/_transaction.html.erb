@@ -1,26 +1,34 @@
-<%# locals: (entry:, balance_trend: nil, view_ctx: "global", in_split_group: false) %>
+<%# locals: (entry:, balance_trend: nil, view_ctx: "global", is_filtered: false, in_split_group: false) %>
 
 <% transaction = entry.entryable %>
-<% transaction_security_logo_url = transaction.activity_security&.display_logo_url %>
-<% open_path = if transaction.transfer?
-     transaction.transfer.present? ? transfer_path(transaction.transfer) : entry_path(entry)
-   else
-     in_split_group ? entry_path(entry, grouped: true) : entry_path(entry)
-   end %>
 
+<%# Cached per row; see TransactionsHelper#transaction_row_cache_key for what
+    busts it; list any new partial or component in TRANSACTION_ROW_SOURCES.
+    A pending transfer match is never cached: its confirm and reject forms
+    embed the session's CSRF token, and the session may not be loaded yet. %>
+<% cache_unless transaction.transfer&.pending?, transaction_row_cache_key(entry, view_ctx: view_ctx, in_split_group: in_split_group, is_filtered: is_filtered), expires_in: 12.hours, skip_digest: true do %>
+<% transaction_security_logo_url = transaction.activity_security&.display_logo_url %>
+<% drawer_params = { view_ctx: view_ctx, is_filtered: is_filtered } %>
+<% open_path = if transaction.transfer?
+     transaction.transfer.present? ? transfer_path(transaction.transfer, drawer_params) : entry_path(entry, drawer_params)
+   else
+     in_split_group ? entry_path(entry, drawer_params.merge(grouped: true)) : entry_path(entry, drawer_params)
+   end %>
 <%= turbo_frame_tag dom_id(entry) do %>
   <%= turbo_frame_tag dom_id(transaction) do %>
-    <div class="group flex lg:grid lg:grid-cols-12 items-center text-primary text-sm font-medium p-3 lg:p-4 <%= "pl-8 lg:pl-12" if in_split_group %>"
+    <div class="group group/transaction flex lg:grid lg:grid-cols-12 items-center text-primary text-sm font-medium p-3 lg:p-4 [html[data-layout-animating]_&:not(:has([aria-expanded=true])):not(:has([role=tooltip]:not(.hidden)))]:[content-visibility:auto] [contain-intrinsic-size:auto_--spacing(18)] <%= "pl-8 lg:pl-12" if in_split_group %>"
          data-controller="clickable-row"
          data-action="click->clickable-row#open">
 
       <div class="pr-4 lg:pr-10 flex items-center gap-3 lg:gap-4 col-span-5 min-w-0 max-md:flex-1">
         <%= check_box_tag dom_id(entry, "selection"),
-            disabled: transaction.transfer.present?,
+            disabled: transaction.transfer.present? && !bulk_reconcilable_transfer?(entry),
             class: "checkbox checkbox--light hidden lg:block",
             data: {
               id: entry.id,
               entry_type: entry.entryable_type,
+              transfer: transaction.transfer.present?,
+              category_editable: transaction.category_editable?,
               "bulk-select-target": "row",
               action: "bulk-select#toggleRowSelection",
               checkbox_toggle_target: "selectionEntry"
@@ -86,59 +94,7 @@
                   </div>
 
                   <div class="flex items-center gap-1 flex-shrink-0">
-                    <% if transaction.one_time? %>
-                      <span class="text-orange-500" title="One-time <%= entry.amount.negative? ? "income" : "expense" %> (excluded from averages)">
-                        <%= icon "asterisk", size: "sm", color: "current" %>
-                      </span>
-                    <% end %>
-
-                    <%# Pending indicator %>
-                    <% if transaction.pending? %>
-                      <%= render DS::Pill.new(
-                        label: t("transactions.transaction.pending"),
-                        tone: :neutral,
-                        marker: false,
-                        icon: "clock",
-                        title: t("transactions.transaction.pending_tooltip")
-                      ) %>
-                    <% end %>
-
-                    <%# Potential duplicate indicator - different styling for low vs medium confidence %>
-                    <% if transaction.has_potential_duplicate? %>
-                      <% if transaction.low_confidence_duplicate? %>
-                        <%= render DS::Pill.new(
-                          label: t("transactions.transaction.review_recommended"),
-                          tone: :neutral,
-                          marker: false,
-                          icon: "help-circle",
-                          title: t("transactions.transaction.review_recommended_tooltip")
-                        ) %>
-                      <% else %>
-                        <%= render DS::Pill.new(
-                          label: t("transactions.transaction.possible_duplicate"),
-                          tone: :warning,
-                          marker: false,
-                          icon: "alert-triangle",
-                          title: t("transactions.transaction.potential_duplicate_tooltip")
-                        ) %>
-                      <% end %>
-                    <% end %>
-
-                    <%# Split indicator %>
-                    <% if @split_parent_entry_ids ? @split_parent_entry_ids.include?(entry.id) : entry.split_parent? %>
-                      <%= render DS::Pill.new(
-                        label: t("transactions.transaction.split"),
-                        tone: :neutral,
-                        marker: false,
-                        icon: "split",
-                        title: t("transactions.transaction.split_tooltip")
-                      ) %>
-                    <% end %>
-                    <% if entry.split_child? && !in_split_group %>
-                      <span class="text-secondary" title="<%= t("transactions.transaction.split_child_tooltip") %>">
-                        <%= icon "corner-down-right", size: "sm", color: "current" %>
-                      </span>
-                    <% end %>
+                    <%= render "transactions/badges", entry: entry, transaction: transaction, in_split_group: in_split_group, drawer_params: drawer_params, compact: true, show_pending: false %>
                   </div>
 
                   <div class="md:hidden flex shrink-0 min-w-0 max-w-1/2 has-[[data-tag-empty]]:hidden">
@@ -146,43 +102,7 @@
                   </div>
                 </div>
 
-                <div class="text-secondary text-xs font-normal">
-                  <% if transaction.transfer? %>
-                    <span class="text-secondary">
-                      <%= transaction.loan_payment? ? t("transactions.show.loan_payment") : t("transactions.show.transfer") %> •
-                      <% if transaction.transfer.present? %>
-                        <% counterpart = transaction.transfer_as_outflow.present? ? transaction.transfer.to_account : transaction.transfer.from_account %>
-                        <% if counterpart.present? && @accessible_account_ids&.include?(counterpart.id) %>
-                          <% if transaction.transfer_as_outflow.present? %>
-                            <%= entry.account.name %> → <%= counterpart.name %>
-                          <% else %>
-                            <%= entry.account.name %> ← <%= counterpart.name %>
-                          <% end %>
-                        <% else %>
-                          <%= entry.account.name %>
-                        <% end %>
-                      <% else %>
-                        <%= entry.account.name %>
-                      <% end %>
-                    </span>
-                  <% else %>
-                    <% if transaction.merchant&.present? %>
-                      <span class="hidden lg:inline truncate"><%= transaction.merchant.name %> • </span>
-                    <% end %>
-                    <span class="text-secondary hidden lg:inline">
-                      <%= link_to entry.account.name,
-                          account_path(entry.account, tab: "transactions"),
-                          data: { turbo_frame: "_top" },
-                          class: "hover:underline" %>
-                    </span>
-                    <div class="flex min-w-0 items-center gap-1">
-                      <%= render "categories/category_name_mobile", transaction: transaction %>
-                        <% if transaction.merchant&.present? %>
-                        <span class="lg:hidden min-w-0 truncate">• <%= transaction.merchant.name %></span>
-                      <% end %>
-                    </div>
-                  <% end %>
-                </div>
+                <%= render "transactions/subtitle", entry: entry, transaction: transaction, view_ctx: view_ctx %>
               </div>
             </div>
           <% end %>
@@ -192,7 +112,7 @@
       <div class="hidden md:flex md:shrink-0 min-w-0 items-center gap-1 col-span-3 pr-2">
         <% if entry.account.supports_trades? && !transaction.transfer? %>
           <%# For investment/crypto accounts, show activity label instead of category %>
-          <%= render "investment_activity/quick_edit_badge", entry: entry, entryable: transaction %>
+          <%= render "investment_activity/quick_edit_badge", entry: entry, entryable: transaction, view_ctx: view_ctx, is_filtered: is_filtered %>
         <% else %>
           <%= render "transactions/transaction_category", transaction: transaction, variant: "desktop", in_split_group: in_split_group %>
         <% end %>
@@ -206,24 +126,51 @@
         <div class="<%= class_names("flex justify-end min-w-0", transaction.transfer&.pending? ? "flex-col-reverse items-end gap-1 lg:flex-row lg:flex-wrap lg:items-center lg:gap-2" : "items-center gap-2 lg:gap-4") %>">
           <% if transaction.transfer.present? %>
             <%= render "transactions/transfer_match", transaction: transaction %>
+          <% elsif @transfer_hint_transaction_ids&.include?(transaction.id) %>
+            <span id="<%= dom_id(transaction, :transfer_hint) %>" class="flex shrink-0 items-center gap-1">
+              <%= link_to new_transaction_transfer_match_path(entry),
+                    class: "hover:opacity-80",
+                    data: { turbo_frame: "modal" } do %>
+                <%= render DS::Pill.new(
+                  label: t("transactions.transaction.transfer_hint"),
+                  tone: :info,
+                  marker: false,
+                  icon: "refresh-cw",
+                  title: t("transactions.transaction.transfer_hint_tooltip")
+                ) %>
+              <% end %>
+              <%= button_to transaction_transfer_match_path(entry),
+                    method: :delete,
+                    class: "text-subdued hover:text-primary flex items-center justify-center cursor-pointer",
+                    title: t("transactions.transaction.transfer_hint_dismiss") do %>
+                <%= icon "x", size: "sm", color: "current" %>
+              <% end %>
+            </span>
           <% end %>
 
-          <div class="shrink-0 ml-auto flex items-center justify-end gap-2 <%= "opacity-50" if entry.excluded %>">
-            <%# Protection indicator - shows on hover when entry is protected from sync %>
-            <% if entry.protected_from_sync? && !entry.excluded? %>
-              <%= link_to entry_path(entry),
-                    data: { turbo_frame: "drawer", turbo_prefetch: false },
-                    class: "invisible group-hover:visible transition-opacity",
-                    title: t("entries.protection.tooltip") do %>
-                <%= icon "lock", size: "sm", class: "text-secondary" %>
-              <% end %>
+          <div class="ml-auto flex min-w-0 max-w-full flex-col-reverse items-end justify-end gap-1 lg:flex-row lg:flex-wrap-reverse lg:items-center lg:gap-2 <%= "opacity-50" if entry.excluded %>">
+            <% if transaction.pending? %>
+              <%= render DS::Pill.new(label: t("transactions.transaction.pending"), tone: :neutral, marker: false, icon: "clock", title: t("transactions.transaction.pending_tooltip")) %>
             <% end %>
-            <%= content_tag :p,
-                transaction.transfer? && view_ctx == "global" ? "+/- #{format_money(entry.amount_money.abs)}" : format_money(-entry.amount_money),
-                class: ["privacy-sensitive", "text-green-600": entry.amount.negative?] %>
+
+            <div class="shrink-0 flex items-center justify-end gap-2">
+              <%# Protection indicator - shows on hover when entry is protected from sync %>
+              <% if entry.protected_from_sync? && !entry.excluded? %>
+                <%= link_to entry_path(entry, drawer_params),
+                      data: { turbo_frame: "drawer", turbo_prefetch: false },
+                      class: "invisible group-hover:visible transition-opacity",
+                      title: t("entries.protection.tooltip") do %>
+                  <%= icon "lock", size: "sm", class: "text-secondary" %>
+                <% end %>
+              <% end %>
+              <%= content_tag :p,
+                  transaction.transfer? && view_ctx == "global" ? "+/- #{format_money(entry.amount_money.abs)}" : format_money(-entry.amount_money),
+                  class: ["privacy-sensitive shrink-0", "text-green-600": entry.amount.negative?] %>
+            </div>
           </div>
         </div>
       </div>
     </div>
   <% end %>
+<% end %>
 <% end %>

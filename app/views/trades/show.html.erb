@@ -24,9 +24,9 @@
               url: trade_path(@entry),
               class: "space-y-2",
               data: { controller: "auto-submit-form" } do |f| %>
+          <%= compact_row_context_fields %>
           <%= f.date_field :date,
                 label: t(".date_label"),
-                max: Date.current,
                 disabled: @entry.linked?,
                 "data-auto-submit-form-target": "auto" %>
           <% if trade.qty.zero? %>
@@ -73,6 +73,20 @@
             <% end %>
           <% end %>
         <% end %>
+        <% lot_choices = trade.lot_choices.includes(:entryable).to_a %>
+        <% if lot_choices.any? %>
+          <%= styled_form_with model: @entry,
+                url: trade_path(@entry),
+                class: "mt-2",
+                data: { controller: "auto-submit-form" } do |f| %>
+            <%= f.fields_for :entryable do |ef| %>
+              <%= ef.select :lot_source_entry_id,
+                    lot_choices.map { |lot| [ t(".lot_option", date: l(lot.date, format: :long), qty: format_quantity(lot.trade.qty, exact: true), price: lot.trade.price_money.format), lot.id ] },
+                    { label: t(".lot_label"), include_blank: t(".lot_oldest_first") },
+                    { "data-auto-submit-form-target": "auto" } %>
+            <% end %>
+          <% end %>
+        <% end %>
       </div>
     <% end %>
     <% dialog.with_section(title: t(".additional")) do %>
@@ -81,6 +95,7 @@
               url: trade_path(@entry),
               class: "space-y-2",
               data: { controller: "auto-submit-form" } do |f| %>
+          <%= compact_row_context_fields %>
           <%= f.text_area :notes,
                 label: t(".note_label"),
                 placeholder: t(".note_placeholder"),
@@ -96,6 +111,7 @@
               url: trade_path(@entry),
               class: "p-3",
               data: { controller: "auto-submit-form" } do |f| %>
+          <%= compact_row_context_fields %>
           <div class="flex cursor-pointer items-center gap-2 justify-between">
             <div class="text-sm space-y-1">
               <h4 class="text-primary"><%= t(".exclude_title") %></h4>

@@ -39,6 +39,47 @@ class TradeRepublicItemImporterTest < ActiveSupport::TestCase
     assert_equal 1, account.raw_positions_payload.size
   end
 
+  test "import falls back to the cash currency when account metadata has none" do
+    @item.update!(currency: "SEK")
+
+    provider = mock("trade_republic_provider")
+    provider.expects(:sync).returns(client_result(
+      "status" => "ok",
+      "session_txt" => "# refreshed cookies",
+      "account" => { "brokerage_account_id" => "DE9994" },
+      "cash" => { "amount" => "10", "currency" => "EUR" },
+      "positions" => [ { "isin" => "US0378331005", "name" => "Apple Inc.", "quantity" => "2", "price" => "100" } ],
+      "events" => [],
+      "warnings" => []
+    ))
+
+    TradeRepublicItem::Importer.new(@item, provider: provider).import
+
+    assert_equal "EUR", @item.trade_republic_accounts.find_by(kind: "cash").currency
+    assert_equal "EUR", @item.trade_republic_accounts.find_by(kind: "portfolio").currency
+    assert_equal "EUR", @item.reload.currency
+  end
+
+  test "import keeps the stored item currency when the cash fetch failed" do
+    @item.update!(currency: "SEK")
+
+    provider = mock("trade_republic_provider")
+    provider.expects(:sync).returns(client_result(
+      "status" => "partial",
+      "session_txt" => "# refreshed cookies",
+      "account" => { "brokerage_account_id" => "DE9993" },
+      "cash" => nil,
+      "positions" => [],
+      "events" => [],
+      "warnings" => []
+    ))
+
+    TradeRepublicItem::Importer.new(@item, provider: provider).import
+
+    assert_equal "SEK", @item.reload.currency
+    assert_equal "SEK", @item.trade_republic_accounts.find_by(kind: "cash").currency
+  end
+
   test "import creates a Crypto account valued at the crypto positions" do
     provider = mock("trade_republic_provider")
     provider.expects(:sync).returns(client_result(
@@ -782,6 +823,93 @@ class TradeRepublicItemImporterTest < ActiveSupport::TestCase
       "positions" => [],
       "events" => [],
       "newest_event_id" => "trade-needs-price",
+      "timeline_pagination_complete" => true,
+      "detail_backfill_count" => 0,
+      "warnings" => []
+    ))
+
+    TradeRepublicItem::Importer.new(@item, provider: provider).import
+  end
+
+  test "a stored transfer without a read note is backfilled into the portfolio and cash payloads" do
+    stored = {
+      "id" => "transfer-old",
+      "timestamp" => "2026-06-17T10:00:00Z",
+      "title" => "Max Mustermann",
+      "subtitle" => "Completed",
+      "eventType" => "INCOMING_TRANSFER",
+      "category" => "PAYMENT_RECEIVED",
+      "detail" => { "amount" => 50.0, "signed_amount" => 50.0, "currency" => "EUR" }
+    }
+    read = stored.merge("id" => "transfer-read", "detail" => stored["detail"].merge("note_checked_at" => "2026-06-18T10:00:00Z"))
+    @item.trade_republic_accounts.create!(
+      kind: "portfolio", name: "Portfolio", trade_republic_account_id: "DE-NOTE", currency: "EUR",
+      raw_timeline_payload: [ stored, read ]
+    )
+    @item.trade_republic_accounts.create!(
+      kind: "cash", name: "Cash", trade_republic_account_id: "cash:DE-NOTE", currency: "EUR",
+      raw_timeline_payload: [ stored, read ]
+    )
+    with_note = stored.merge(
+      "detail" => stored["detail"].merge("note" => "Invoice 2026-0001", "note_checked_at" => "2026-11-10T10:00:00Z")
+    )
+
+    provider = mock("trade_republic_provider")
+    provider.expects(:sync).with { |args|
+      Array(args[:enrich_events]).map { |event| event["id"] } == [ "transfer-old" ]
+    }.returns(client_result(
+      "status" => "ok",
+      "session_txt" => "# refreshed cookies",
+      "account" => { "brokerage_account_id" => "DE-NOTE", "currency" => "EUR" },
+      "cash" => { "amount" => "1", "currency" => "EUR" },
+      "positions" => [],
+      "events" => [ with_note ],
+      "newest_event_id" => "transfer-read",
+      "timeline_pagination_complete" => true,
+      "detail_backfill_count" => 1,
+      "warnings" => []
+    ))
+
+    result = TradeRepublicItem::Importer.new(@item, provider: provider).import
+
+    assert_equal 1, result[:detail_backfill_count]
+    %w[portfolio cash].each do |kind|
+      events = @item.trade_republic_accounts.find_by!(kind: kind).raw_timeline_payload
+      assert_equal "Invoice 2026-0001", events.find { |event| event["id"] == "transfer-old" }.dig("detail", "note"), kind
+      assert_nil events.find { |event| event["id"] == "transfer-read" }.dig("detail", "note"), kind
+    end
+  end
+
+  test "a transfer kept only in the cash payload is backfilled and a read one is passed on" do
+    transfer = {
+      "id" => "transfer-cash-only",
+      "timestamp" => "2026-06-17T10:00:00Z",
+      "eventType" => "OUTGOING_TRANSFER",
+      "category" => "POC_CREATED",
+      "detail" => { "amount" => 20.0, "currency" => "EUR" }
+    }
+    read = transfer.merge("id" => "transfer-read", "detail" => { "amount" => 5.0, "note_checked_at" => "2026-06-18T10:00:00Z" })
+    @item.trade_republic_accounts.create!(
+      kind: "portfolio", name: "Portfolio", trade_republic_account_id: "DE-CASHONLY", currency: "EUR",
+      raw_timeline_payload: [ read ]
+    )
+    @item.trade_republic_accounts.create!(
+      kind: "cash", name: "Cash", trade_republic_account_id: "cash:DE-CASHONLY", currency: "EUR",
+      raw_timeline_payload: [ transfer, read ]
+    )
+
+    provider = mock("trade_republic_provider")
+    provider.expects(:sync).with { |args|
+      Array(args[:enrich_events]).map { |event| event["id"] } == [ "transfer-cash-only" ] &&
+        args[:note_read_event_ids] == [ "transfer-read" ]
+    }.returns(client_result(
+      "status" => "ok",
+      "session_txt" => "# refreshed cookies",
+      "account" => { "brokerage_account_id" => "DE-CASHONLY", "currency" => "EUR" },
+      "cash" => { "amount" => "1", "currency" => "EUR" },
+      "positions" => [],
+      "events" => [],
+      "newest_event_id" => "transfer-read",
       "timeline_pagination_complete" => true,
       "detail_backfill_count" => 0,
       "warnings" => []

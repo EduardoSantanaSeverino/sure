@@ -63,7 +63,8 @@ class Account::MarketDataImporterTest < ActiveSupport::TestCase
   end
 
   test "imports account exchange rates into the primary currency when the family currency is blank" do
-    family = Family.create!(name: "Smith", currency: "")
+    family = Family.create!(name: "Smith", currency: "USD")
+    family.update_column(:currency, "")
 
     account = family.accounts.create!(
       name: "Chequing",
@@ -90,10 +91,11 @@ class Account::MarketDataImporterTest < ActiveSupport::TestCase
     )
     account.entries.create!(date: 10.days.ago.to_date, amount: 10, currency: "GBP", name: "Card payment", entryable: Transaction.new)
 
-    [ %w[GBP CAD], %w[GBP USD], %w[CAD USD] ].each do |from, to|
+    # GBP/CAD comes back empty, so GBP/USD is fetched again as its first USD leg.
+    { %w[GBP CAD] => 1, %w[GBP USD] => 2, %w[CAD USD] => 1 }.each do |(from, to), calls|
       @provider.expects(:fetch_exchange_rates)
                .with(from: from, to: to, start_date: anything, end_date: anything)
-               .once
+               .times(calls)
                .returns(provider_success_response([]))
     end
 

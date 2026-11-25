@@ -4,10 +4,13 @@ class RecurringTransaction
   # them, lands unclaimed patterns as `suggested`, and offers candidate patterns
   # to the add-bill pickers.
   class Identifier
-    attr_reader :family
+    # Ids of the series the last identify_recurring_patterns run attributed
+    # ordinary charges to, by claiming or creating them.
+    attr_reader :family, :claimed_series_ids
 
     def initialize(family)
       @family = family
+      @claimed_series_ids = []
     end
 
     # Amounts within this percentage of a cluster's running mean belong to the
@@ -104,6 +107,7 @@ class RecurringTransaction
 
     # Identify and create/update recurring transactions for the family
     def identify_recurring_patterns
+      claimed_series_ids.clear
       three_months_ago = 3.months.ago.to_date
       recurring_patterns = collect_patterns(min_occurrences: 3)
 
@@ -125,7 +129,9 @@ class RecurringTransaction
         if claimed
           # Manual rows are refreshed by the dedicated variance pass; ended
           # rows are tombstones (the user dismissed or cancelled the bill).
-          next if claimed.manual? || claimed.ended?
+          # A reference-only series is tracked by its note alone, not by the
+          # name or merchant groups this pass refreshes it from.
+          next if claimed.manual? || claimed.ended? || claimed.reference_only?
 
           update_claimed_series(claimed, pattern)
           next
@@ -133,13 +139,14 @@ class RecurringTransaction
 
         begin
           created = create_suggested_series(pattern, scoped: candidates.any?)
+          claimed_series_ids << created.id
           (existing_by_identity[identity] ||= []) << created
         rescue ActiveRecord::RecordNotUnique
           # Race: another process created the same identity between load and
           # save. Re-read and treat it as the claimed series.
           racer = family.recurring_transactions.find_by(identity_conditions(pattern, scoped: candidates.any?))
           next unless racer
-          next if racer.manual? || racer.ended?
+          next if racer.manual? || racer.ended? || racer.reference_only?
 
           update_claimed_series(racer, pattern)
         end
@@ -189,6 +196,8 @@ class RecurringTransaction
           last_occurrence_date: last_entry.date,
           next_expected_date: recurring.schedule.next_occurrence_after(last_entry.date)
         )
+
+        fill_blank_category(recurring, modal_category_id(matching_entries))
       end
     end
 
@@ -341,7 +350,7 @@ class RecurringTransaction
       def preload_series_to_refresh(recurring_patterns, existing_by_identity)
         to_refresh = recurring_patterns.filter_map do |pattern|
           claimed = nearest_within_tolerance(existing_by_identity[pattern_identity(pattern)] || [], pattern[:expected_amount_avg])
-          claimed unless claimed.nil? || claimed.manual? || claimed.ended?
+          claimed unless claimed.nil? || claimed.manual? || claimed.ended? || claimed.reference_only?
         end.uniq
 
         return if to_refresh.empty?
@@ -363,6 +372,7 @@ class RecurringTransaction
       # PriceChangeDetector), and so is the due day once the user has pinned
       # the schedule.
       def update_claimed_series(recurring, pattern)
+        claimed_series_ids << recurring.id
         # A detected day shift lands before the date math, so the persisted
         # next_expected_date agrees with the regenerated occurrences instead
         # of keeping the old day for a cycle.
@@ -380,6 +390,53 @@ class RecurringTransaction
           expected_amount_max: pattern[:expected_amount_max],
           expected_amount_avg: pattern[:expected_amount_avg]
         )
+
+        if fillable_category?(recurring)
+          classification = Classifier.classify(name: pattern[:name] || pattern[:entries].first.name, entries: pattern[:entries])
+          fill_blank_category(recurring, classification.category_id)
+        end
+      end
+
+      # A series' category is classified once, when detection creates it, so
+      # transactions categorised afterwards never reached it. Fill a blank one
+      # from what its transactions now carry; a category already on the series
+      # (the user's, or an earlier fill) is never overwritten, and income stays
+      # uncategorised as it is at creation.
+      #
+      # The series was loaded at the start of the run, so a category the user
+      # saved since is not on this copy. The blank check is therefore repeated
+      # in the UPDATE itself, against the row as it stands, and the write
+      # touches nothing else. It runs after the bookkeeping update! so that
+      # save never carries a category of its own.
+      #
+      # update_all also skips category_belongs_to_family, and a transaction's
+      # category_id carries no ownership check of its own, so the id is
+      # checked against the family here.
+      def fill_blank_category(recurring, category_id)
+        return if category_id.blank? || !fillable_category?(recurring)
+        return unless family.categories.exists?(id: category_id)
+
+        filled = RecurringTransaction
+          .where(id: recurring.id, category_id: nil)
+          .update_all(category_id: category_id, updated_at: Time.current)
+        return unless filled == 1
+
+        recurring.category_id = category_id
+        recurring.clear_attribute_changes([ :category_id ])
+      end
+
+      def fillable_category?(recurring)
+        recurring.category_id.blank? && !recurring.typed_income?
+      end
+
+      # The manual pass loads entries without their transactions, so the
+      # category rides along as a selected column. Ties and the "most common"
+      # rule match Classifier#modal_category_id.
+      def modal_category_id(entries)
+        entries.filter_map { |entry| entry.read_attribute("transaction_category_id") }
+               .tally
+               .max_by { |_category_id, count| count }
+               &.first
       end
 
       # Scheduling reads recurrence_rules, not expected_day_of_month, so a
@@ -452,7 +509,7 @@ class RecurringTransaction
           .joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
           .where(entries: { entryable_type: "Transaction", currency: currencies })
           .where("entries.date >= ?", lookback_date)
-          .select("entries.*, transactions.merchant_id AS transaction_merchant_id")
+          .select("entries.*, transactions.merchant_id AS transaction_merchant_id, transactions.category_id AS transaction_category_id")
           .order(date: :desc)
 
         # Legacy manual rows without account_id can match any account in the
@@ -473,6 +530,8 @@ class RecurringTransaction
       end
 
       def manual_recurring_matches_entry?(recurring, entry)
+        # Identified by its note alone; the matcher tracks it, not name and day.
+        return false if recurring.reference_only?
         return false unless entry.currency == recurring.currency
         return false if recurring.account_id.present? && entry.account_id != recurring.account_id
         # Anchor on the row's stable, user-set seed amount (not

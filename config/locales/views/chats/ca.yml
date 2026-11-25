@@ -12,8 +12,8 @@ ca:
       available_description: El xat amb IA pot respondre preguntes financeres i oferir-te
         anàlisis basades en les teves dades. Per utilitzar aquesta funcionalitat l'has
         d'activar explícitament.
-      disable_note: Desactiva-ho en qualsevol moment. Totes les dades enviades als
-        nostres proveïdors de LLM són anonimitzades.
+      disable_note: "Desactiva-ho en qualsevol moment. Això activa la IA per al xat, les factures i la cerca de documents, que envien els teus missatges, transaccions i documents tal com són al proveïdor d'IA d'aquesta instància."
+      family_note: "Com a administrador de la família, també activa la categorització amb IA i la detecció de comerços per a la teva família, que envien els noms, els imports i els comerços de les transaccions."
       enable_button: Activa els xats d'IA
       title: Activa els xats d'IA
       unavailable_description_html: Per utilitzar l'assistent d'IA, has d'establir
@@ -38,9 +38,7 @@ ca:
       delete_chat: Elimina el xat
       edit_chat_title: Edita el títol del xat
       start_new_chat: Inicia un xat nou
-    demo_banner_message: "Estàs utilitzant LLM amb crèdits proporcionats per Cloudflare
-      Workers AI. Els resultats poden variar, ja que el codi s'ha provat amb `gpt-4.1`,
-      però els teus tokens no s'envien enlloc més per entrenar-los! 🤖"
+    demo_banner_message: "Tokens gratuïts per a LLM cortesia de Vercel AI Gateway. Els resultats poden variar perquè canviem sovint els pesos dels models per fer proves. Consulta la documentació de Vercel per saber on van les teves converses! 🤖"
     demo_banner_title: Mode demostració actiu
     destroy:
       notice: Xat eliminat correctament

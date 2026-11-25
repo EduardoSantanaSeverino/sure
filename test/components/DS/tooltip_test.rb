@@ -1,6 +1,17 @@
 require "test_helper"
 
 class DS::TooltipTest < ViewComponent::TestCase
+  test "uses custom trigger content when provided" do
+    trigger = '<span class="reconciliation-indicator"></span>'.html_safe
+
+    render_inline(DS::Tooltip.new(text: "Matched", as: :span, trigger_content: trigger))
+
+    assert_selector "span.reconciliation-indicator"
+    assert_no_selector "svg"
+    assert_selector "[aria-describedby^='tooltip-']"
+    assert_selector "[role='tooltip']", text: "Matched"
+  end
+
   test "defaults to the inverse surface with an icon trigger" do
     render_inline(DS::Tooltip.new(text: "Helpful hint"))
 
@@ -29,5 +40,14 @@ class DS::TooltipTest < ViewComponent::TestCase
 
   test "rejects unknown variants" do
     assert_raises(ArgumentError) { DS::Tooltip.new(variant: :neon) }
+  end
+
+  test "bubble and content share a width cap with normal wrapping" do
+    # Guards against text spilling past the bubble when a tooltip sits
+    # inside a truncating ancestor (which leaks white-space: nowrap).
+    render_inline(DS::Tooltip.new(text: "A very long tooltip text that must wrap", variant: :surface))
+
+    assert_selector "[role=tooltip].max-w-80", visible: :all
+    assert_selector "[role=tooltip] .whitespace-normal.max-w-80", visible: :all, text: "A very long tooltip text that must wrap"
   end
 end

@@ -30,13 +30,29 @@ fr:
       plural: Familles
       singular: Famille
     money_field:
+      above_max: Saisissez un montant inférieur ou égal à %{max}.
+      below_min: Saisissez un montant supérieur ou égal à %{min}.
+      invalid_amount: Saisissez un montant ou une expression valide.
       label: Montant
+      operator_add: Additionner
+      operator_divide: Diviser
+      operator_multiply: Multiplier
+      operator_subtract: Soustraire
     preview: Aperçu
+    exchange_rate_notes:
+      missing:
+        one: 'Aucun taux de change de %{currencies} vers %{currency} n''est encore enregistré : certains totaux peuvent donc exclure les montants en %{currencies}.'
+        other: 'Aucun taux de change de %{currencies} vers %{currency} n''est encore enregistré : certains totaux peuvent donc exclure les montants dans ces devises.'
+      stale:
+        one: 'Le dernier taux de change vers %{currency} n''est plus à jour : %{rates}. Les totaux du jour l''utilisent.'
+        other: 'Les derniers taux de change vers %{currency} ne sont plus à jour : %{rates}. Les totaux du jour les utilisent.'
+      stale_rate: "%{from} du %{date}"
     require_admin: Seuls les administrateurs peuvent effectuer cette action
     sidekiq_health_banner:
       body: 'Les tâches en arrière-plan ne sont pas traitées : les soldes, le patrimoine net et les synchronisations de comptes peuvent donc être obsolètes ou absents.'
       cta: Voir la santé du système
       reasons:
+        ai_queues_not_polled: Aucun worker ne traite les files d'attente IA (discussion, détection des marchands, catégorisation). Vérifiez que le worker charge config/sidekiq.yml.
         no_worker_processes: Aucun processus worker Sidekiq n'est connecté. Démarrez le conteneur worker ou l'unité systemd.
         queue_backed_up: La plus ancienne tâche en file d'attente attend au-delà du budget de latence. Le worker est actif mais prend du retard.
         redis_unreachable: L'application ne parvient pas à joindre Redis. Vérifiez votre REDIS_URL et que Redis fonctionne.
@@ -53,3 +69,5 @@ fr:
       transfer: Transfert
     trend_change:
       no_change: pas de changement
+    require_non_guest: Les invités ne peuvent pas effectuer cette action
+    require_connector_owner: Vous ne pouvez gérer que les connexions que vous avez ajoutées

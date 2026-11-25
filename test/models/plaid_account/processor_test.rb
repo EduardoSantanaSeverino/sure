@@ -182,6 +182,38 @@ class PlaidAccount::ProcessorTest < ActiveSupport::TestCase
     PlaidAccount::Processor.new(@plaid_account).process
   end
 
+  # The loan processors date a rate change, so they are given the sync's date
+  # rather than reading the clock.
+  test "the sync date reaches the liability processor" do
+    expect_investment_product_processor_calls
+    expect_no_investment_balance_calculator_calls
+    expect_depository_product_processor_calls
+
+    @plaid_account.update!(plaid_type: "loan", plaid_subtype: "mortgage")
+    date = Date.new(2026, 1, 15)
+    mortgage = mock("mortgage_processor")
+    mortgage.expects(:process).once
+
+    PlaidAccount::Liabilities::MortgageProcessor.expects(:new).with(@plaid_account, as_of: date).returns(mortgage)
+
+    PlaidAccount::Processor.new(@plaid_account, as_of: date).process
+  end
+
+  test "the sync date reaches the student loan processor" do
+    expect_investment_product_processor_calls
+    expect_no_investment_balance_calculator_calls
+    expect_depository_product_processor_calls
+
+    @plaid_account.update!(plaid_type: "loan", plaid_subtype: "student")
+    date = Date.new(2026, 1, 15)
+    student_loan = mock("student_loan_processor")
+    student_loan.expects(:process).once
+
+    PlaidAccount::Liabilities::StudentLoanProcessor.expects(:new).with(@plaid_account, as_of: date).returns(student_loan)
+
+    PlaidAccount::Processor.new(@plaid_account, as_of: date).process
+  end
+
   test "processes student loan liability data" do
     expect_investment_product_processor_calls
     expect_no_investment_balance_calculator_calls
@@ -301,6 +333,71 @@ class PlaidAccount::ProcessorTest < ActiveSupport::TestCase
 
     current_anchor = @plaid_account.current_account.valuations.current_anchor.first
     assert_equal Date.current, current_anchor.entry.date
+  end
+
+  test "an investment's holdings are written on its balance anchor's date" do
+    PlaidAccount::Investments::TransactionsProcessor.any_instance.stubs(:process)
+    PlaidAccount::Transactions::Processor.any_instance.stubs(:process)
+    expect_no_liability_processor_calls
+    PlaidAccount::Investments::BalanceCalculator.any_instance.stubs(:balance).returns(1000)
+    PlaidAccount::Investments::BalanceCalculator.any_instance.stubs(:cash_balance).returns(100)
+
+    snapshot_date = Date.current - 1
+    securities_by_plaid_id = {
+      "a" => securities(:aapl),
+      "b" => securities(:msft),
+      "c" => Security.create!(ticker: "GOOGL", name: "Google", exchange_operating_mic: "XNAS", country_code: "US"),
+      "e" => Security.create!(ticker: "AMZN", name: "Amazon", exchange_operating_mic: "XNAS", country_code: "US")
+    }
+    securities_by_plaid_id.each do |plaid_security_id, security|
+      PlaidAccount::Investments::SecurityResolver.any_instance.stubs(:resolve)
+        .with(plaid_security_id: plaid_security_id)
+        .returns(OpenStruct.new(security: security))
+    end
+
+    @plaid_account.update!(
+      plaid_type: "investment",
+      raw_holdings_payload: { "holdings" => [
+        { "security_id" => "a", "quantity" => "10", "institution_price" => "90", "iso_currency_code" => "USD", "institution_price_as_of" => snapshot_date.to_s },
+        { "security_id" => "b", "quantity" => "5", "institution_price" => "20", "iso_currency_code" => "USD", "institution_price_as_of" => (snapshot_date - 3).to_s },
+        { "security_id" => "c", "quantity" => "2", "institution_price" => "30", "iso_currency_code" => "USD", "institution_price_as_of" => (Date.current + 1).to_s },
+        { "security_id" => "e", "quantity" => "1", "institution_price" => "40", "iso_currency_code" => "USD" }
+      ] }
+    )
+
+    PlaidAccount::Processor.new(@plaid_account).process
+
+    account = @plaid_account.current_account
+    anchor_date = account.valuations.current_anchor.first.entry.date
+    assert_equal snapshot_date, anchor_date
+    assert_equal securities_by_plaid_id.values.map(&:id).sort, account.holdings.pluck(:security_id).sort
+    assert_equal [ anchor_date ], account.holdings.distinct.pluck(:date)
+  end
+
+  test "the anchor and the holdings both take the account's holdings snapshot date" do
+    PlaidAccount::Investments::TransactionsProcessor.any_instance.stubs(:process)
+    PlaidAccount::Transactions::Processor.any_instance.stubs(:process)
+    expect_no_liability_processor_calls
+    PlaidAccount::Investments::BalanceCalculator.any_instance.stubs(:balance).returns(1000)
+    PlaidAccount::Investments::BalanceCalculator.any_instance.stubs(:cash_balance).returns(100)
+    PlaidAccount::Investments::SecurityResolver.any_instance.stubs(:resolve).returns(OpenStruct.new(security: securities(:aapl)))
+
+    @plaid_account.update!(
+      plaid_type: "investment",
+      raw_holdings_payload: { "holdings" => [
+        { "security_id" => "a", "quantity" => "10", "institution_price" => "90", "iso_currency_code" => "USD", "institution_price_as_of" => (Date.current - 1).to_s }
+      ] }
+    )
+    # A date no rule over this payload would produce, so both readers can
+    # only arrive at it through the one method.
+    snapshot_date = Date.current - 7
+    @plaid_account.stubs(:holdings_snapshot_date).returns(snapshot_date)
+
+    PlaidAccount::Processor.new(@plaid_account).process
+
+    account = @plaid_account.current_account
+    assert_equal snapshot_date, account.valuations.current_anchor.first.entry.date
+    assert_equal [ snapshot_date ], account.holdings.pluck(:date)
   end
 
   test "an investment snapshot dated behind the anchor is recorded on its own date and leaves the anchor alone" do

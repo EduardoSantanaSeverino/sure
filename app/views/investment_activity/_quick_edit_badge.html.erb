@@ -1,4 +1,4 @@
-<%# locals: (entry:, entryable:) %>
+<%# locals: (entry:, entryable:, view_ctx: "global", is_filtered: false) %>
 <%
   label = entryable.investment_activity_label
   has_label = label.present?
@@ -44,6 +44,8 @@
      data-activity-label-quick-edit-entryable-id-value="<%= entryable.id %>"
      data-activity-label-quick-edit-current-label-value="<%= label %>"
      data-activity-label-quick-edit-entryable-type-value="<%= entryable_type %>"
+     data-activity-label-quick-edit-view-ctx-value="<%= view_ctx %>"
+     data-activity-label-quick-edit-is-filtered-value="<%= is_filtered ? "1" : "0" %>"
      <% if convert_url %>
      data-activity-label-quick-edit-convert-url-value="<%= convert_url %>"
      <% end %>>
@@ -59,6 +61,7 @@
         class: "inline-flex items-center gap-1 text-xs font-medium rounded-full px-2.5 py-1 #{income_trade ? "cursor-pointer" : "cursor-pointer hover:opacity-80"} transition-opacity",
         style: (has_label ? "background-color: color-mix(in oklab, #{color} 15%, transparent); border: 1px solid color-mix(in oklab, #{color} 25%, transparent); color: #{color};" : "background-color: var(--color-surface-inset); border: 1px solid var(--color-border-secondary); color: var(--color-text-secondary);"),
         data: (income_trade ? {} : { action: "click->activity-label-quick-edit#toggle", activity_label_quick_edit_target: "badge" }),
+        aria: (income_trade ? {} : { expanded: "false" }),
         title: (has_label ? t("transactions.transaction.activity_type_tooltip") : t("transactions.show.activity_type"))) do %>
     <% if has_label %>
       <%= t("transactions.activity_labels.#{label.parameterize(separator: "_")}", default: label) %>

@@ -2,7 +2,7 @@
 pt-PT:
   chats:
     demo_banner_title: "Modo de Demonstração ativo"
-    demo_banner_message: "Está a utilizar modelos IA através de créditos disponibilizados pelo Cloudflare Workers AI. Os resultados podem variar, uma vez que a base de código foi testada com `gpt-4.1`, mas os seus tokens não são utilizados para treinar outros modelos! 🤖"
+    demo_banner_message: "Tokens de LLM gratuitos por cortesia do Vercel AI Gateway. Os resultados podem variar, pois alteramos frequentemente os pesos dos modelos para fins de teste. Consulte a documentação da Vercel para saber para onde vão as suas conversas! 🤖"
     thinking: "A pensar ..."
     worker_unhealthy_warning: "As respostas de IA podem não ser entregues neste momento — o worker em segundo plano parece estar em baixo ou sobrecarregado. Verifique se o seu worker Sidekiq está a funcionar."
     ai_greeting:
@@ -35,7 +35,8 @@ pt-PT:
       available_description: "O chat de IA pode responder a perguntas financeiras e fornecer informações com base nos seus dados. Para utilizar esta funcionalidade, terá de a ativar."
       unavailable_description_html: "Para utilizar o assistente de IA, terá de definir a variável de ambiente <code class=\"bg-surface-inset px-1 py-0.5 rounded font-mono text-xs\">OPENAI_ACCESS_TOKEN</code> ou configurá-la nas definições de Self-Hosting da sua instância."
       enable_button: "Ativar Chats de IA"
-      disable_note: "Pode desativar esta funcionalidade a qualquer momento. Todos os dados enviados para os serviços de IA que utilizamos são anonimizados."
+      disable_note: "Pode desativar esta funcionalidade a qualquer momento. Isto ativa a IA para o chat, as faturas e a pesquisa em documentos, que enviam as suas mensagens, transações e documentos tal como estão ao fornecedor de IA desta instância."
+      family_note: "Como administrador da família, isto também ativa a categorização por IA e a deteção de comerciantes para a sua família, que enviam os nomes, montantes e comerciantes das transações."
   assistant_messages:
     assistant_message:
       assistant_reasoning: "Raciocínio do assistente"

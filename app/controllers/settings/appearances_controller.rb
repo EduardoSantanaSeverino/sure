@@ -29,10 +29,38 @@ class Settings::AppearancesController < ApplicationController
         selected = (account_groups.is_a?(Array) ? account_groups : [ account_groups ])
         updated_prefs["always_expanded_account_groups"] = selected.select { |k| valid_keys.include?(k) }
       end
+
+      if params.dig(:user, :transactions_compact)
+        updated_prefs["transactions_compact"] = params.dig(:user, :transactions_compact) == "1"
+      end
+
+      if params.dig(:user, :transactions_group_by_date)
+        updated_prefs["transactions_group_by_date"] = params.dig(:user, :transactions_group_by_date) == "1"
+      end
+
+      if params.dig(:user, :transactions_show_notes)
+        updated_prefs["transactions_show_notes"] = params.dig(:user, :transactions_show_notes) == "1"
+      end
+
+      if params.dig(:user, :transactions_per_page)
+        per_page = params.dig(:user, :transactions_per_page).to_i
+        allowed = User::TRANSACTIONS_PER_PAGE_OPTIONS
+        updated_prefs["transactions_per_page"] = per_page if allowed.include?(per_page)
+      end
+
       # Account order is a column, not a preference; unknown keys are ignored.
       account_order = params.dig(:user, :default_account_order)
       @user.default_account_order = account_order if AccountOrder::ORDERS.key?(account_order.to_s)
     end
+
+    # Family-wide (not a per-user preference, unlike the toggles above): it
+    # controls what gets written to shared transaction data regardless of
+    # which family member is logged in, so only an admin may change it --
+    # same restriction as the other family-level settings in UsersController.
+    if @user.admin? && params.dig(:family, :auto_generate_transaction_names)
+      Current.family.update!(auto_generate_transaction_names: params.dig(:family, :auto_generate_transaction_names) == "1")
+    end
+
     redirect_to settings_appearance_path
   end
 end

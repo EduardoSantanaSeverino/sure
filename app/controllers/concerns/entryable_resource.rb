@@ -1,10 +1,20 @@
 module EntryableResource
   extend ActiveSupport::Concern
 
+  # Compact row-render context (COMPACT_VIEW_CONTEXTS,
+  # FILTERED_REFERER_PATTERN, assign/resolve_compact_row_context and the
+  # referer fallbacks) lives in StreamExtensions so controllers that cannot
+  # include this concern (e.g. TransfersController, which owns set_transfer)
+  # resolve drawer/update row context the same way.
+  # Kept here as aliases so existing references keep working.
+  COMPACT_VIEW_CONTEXTS = StreamExtensions::COMPACT_VIEW_CONTEXTS
+  FILTERED_REFERER_PATTERN = StreamExtensions::FILTERED_REFERER_PATTERN
+
   included do
     include StreamExtensions, ActionView::RecordIdentifier
 
     before_action :set_entry, only: %i[show update destroy]
+    before_action :assign_compact_row_context, only: :show
 
     helper_method :can_edit_entry?, :can_annotate_entry?
   end
@@ -33,10 +43,12 @@ module EntryableResource
   def destroy
     return unless require_account_permission!(@entry.account)
 
-    @entry.destroy!
+    @entry.destroy_unless_split_part_transferred!
     @entry.sync_account_later
 
     redirect_back_or_to account_path(@entry.account), notice: t("account.entries.destroy.success")
+  rescue Entry::SplitPartTransferredError
+    redirect_back_or_to account_path(@entry.account), alert: t("account.entries.destroy.part_transferred")
   end
 
   private

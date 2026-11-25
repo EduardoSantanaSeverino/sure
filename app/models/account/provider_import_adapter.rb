@@ -1,4 +1,6 @@
 class Account::ProviderImportAdapter
+  SCHEDULED_MATCH_WINDOW_DAYS = 7
+
   attr_reader :account, :skipped_entries
 
   # @param account [Account] the account every import through this adapter lands on
@@ -56,6 +58,16 @@ class Account::ProviderImportAdapter
       # the protection check (pending→booked bypass) and the auto-claim path below.
       incoming_pending = extra.is_a?(Hash) && Transaction.pending_extra?(extra.with_indifferent_access)
 
+      # An automatically excluded stale pending (see Entry.auto_exclude_stale_pending)
+      # that the provider now delivers as booked under the same id becomes a normal
+      # entry again. Entries the user excluded are never touched. An import_locked
+      # entry that is not user_modified keeps its pending flag below, so it stays
+      # excluded rather than being re-excluded on every sync.
+      if entry.persisted? && !incoming_pending && entry.auto_excluded_pending? &&
+          (entry.user_modified? || !entry.import_locked?)
+        entry.update!(excluded: false) # also drops the mark (Entry callback)
+      end
+
       # === PROTECTION CHECK: Skip entries that should not be overwritten ===
       # Check persisted Transaction entries for protection flags before making changes.
       # This prevents sync from overwriting user edits, CSV imports, or excluded entries.
@@ -110,8 +122,19 @@ class Account::ProviderImportAdapter
       # before linking their account to a provider
       # Note: We don't pass name here to allow matching even when provider formats names differently
       if entry.new_record? && allow_heuristic_matching
-        duplicate = find_duplicate_transaction(date: date, amount: amount, currency: currency)
-        if duplicate
+        scheduled = find_scheduled_transaction(date: date, amount: amount, currency: currency)
+        duplicate = find_duplicate_transaction(date: date, amount: amount, currency: currency) unless scheduled
+
+        if scheduled
+          # A bill or paycheck the user entered ahead of time has now been
+          # booked. Claim it even when the user's edits protect it: the
+          # enrichment below still respects their locks (name, category, notes),
+          # but the provider's date and pending state must apply -- otherwise
+          # the entry stays on its expected day, and a pending claim would never
+          # be recognized when the booked version arrives under a new id.
+          entry = scheduled
+          entry.assign_attributes(external_id: external_id, source: source, date: date)
+        elsif duplicate
           # Check if duplicate is protected - if so, link but don't modify
           if duplicate.protected_from_sync?
             duplicate.update!(external_id: external_id, source: source)
@@ -272,7 +295,9 @@ class Account::ProviderImportAdapter
           entry.transaction.assign_attributes(kind: transfer ? transfer.kind_for_leg(entry.transaction) : auto_kind)
         end
 
-        if auto_category.present? && entry.transaction.category_id.blank?
+        # Only while the leg is a contribution: a matched transfer can make it
+        # a plain transfer above, which carries no category.
+        if auto_category.present? && entry.transaction.category_id.blank? && entry.transaction.kind == "investment_contribution"
           entry.transaction.assign_attributes(category: auto_category)
         end
       end
@@ -455,13 +480,26 @@ class Account::ProviderImportAdapter
           # Security::Resolver returns a different security instance for the same ticker)
           # Scope by account_provider_id to avoid cross-provider overwrites
           # Skip if ticker is blank to avoid matching NULL tickers
+          # External ids are unique per account, so a same-day row with an id of
+          # its own is another of the provider's positions, not this one under
+          # another security: only a row stored without an id (nil, or blank as
+          # the branch below stores a blank one) can match.
+          # The same ticker on another exchange can be a different company, so a
+          # known exchange has to agree with this one's, the same listing coming
+          # before one stored without an exchange. A row matches only when no
+          # other candidate is as good a match: two rows on the same exchange,
+          # or two without one, leave the holding unmatched.
           unless holding || security.ticker.blank?
             scope = account.holdings
               .joins("INNER JOIN securities AS ps ON ps.id = holdings.provider_security_id")
-              .where(date: date, currency: currency)
+              .where(date: date, currency: currency, external_id: [ nil, "" ])
               .where("ps.ticker = ?", security.ticker)
+            venues = Security.exchange_operating_mic_lookup_values(security.exchange_operating_mic)
+            scope = scope.where("COALESCE(ps.exchange_operating_mic, '') = '' OR UPPER(ps.exchange_operating_mic) IN (?)", venues) if venues.any?
             scope = scope.where(account_provider_id: account_provider_id) if account_provider_id.present?
-            holding = scope.first
+            first, second = scope.select("holdings.*, COALESCE(ps.exchange_operating_mic, '') AS provider_mic")
+                                 .order(Arel.sql("COALESCE(ps.exchange_operating_mic, '') = ''"), :id).limit(2).to_a
+            holding = first if first && (second.nil? || (venues.any? && first.provider_mic.present? && second.provider_mic.blank?))
           end
 
           # Fallback path 2: match by (security, date, currency) — and when provided,
@@ -482,7 +520,11 @@ class Account::ProviderImportAdapter
           end
         end
 
-        holding ||= account.holdings.new(
+        # Built outside account.holdings, as below: a record built there joins
+        # the account's holdings unsaved, and an import that fails after that
+        # (a collision, a validation) would leave the account unable to save.
+        holding ||= Holding.new(
+          account: account,
           security: security,
           date: date,
           currency: currency,
@@ -497,11 +539,8 @@ class Account::ProviderImportAdapter
         remapped_attrs[:account_provider_id] = account_provider_id if account_provider_id.present?
         holding = account.holdings.find_by(remapped_attrs)
 
-        holding ||= account.holdings.find_or_initialize_by(
-          security: security,
-          date: date,
-          currency: currency
-        )
+        holding ||= account.holdings.find_by(security: security, date: date, currency: currency) ||
+          Holding.new(account: account, security: security, date: date, currency: currency)
       end
 
       # Early cross-provider composite-key conflict guard: avoid attempting a write
@@ -546,12 +585,11 @@ class Account::ProviderImportAdapter
         external_id: external_id
       }
 
+      corrections = corrections_from(carried, provider_security_id: security.id)
+      attributes.merge!(corrections)
+
       # Only update security if not locked by user
-      if carried&.security_locked?
-        attributes[:security] = carried.security
-        attributes[:provider_security_id] = carried.provider_security_id || security.id
-        attributes[:security_locked] = true
-      elsif holding.new_record? || holding.security_replaceable_by_provider?
+      if !corrections.key?(:security) && (holding.new_record? || holding.security_replaceable_by_provider?)
         attributes[:security] = security
         # Track the provider's original security so reset_security_to_provider! works
         # Only set if not already set (preserves original if user remapped then unlocked)
@@ -559,11 +597,7 @@ class Account::ProviderImportAdapter
       end
 
       # Only update cost_basis if reconciliation says to
-      if carried&.cost_basis_locked?
-        attributes[:cost_basis] = carried.cost_basis
-        attributes[:cost_basis_source] = carried.cost_basis_source
-        attributes[:cost_basis_locked] = true
-      elsif reconciled[:should_update]
+      if !corrections.key?(:cost_basis) && reconciled[:should_update]
         attributes[:cost_basis] = reconciled[:cost_basis]
         attributes[:cost_basis_source] = reconciled[:cost_basis_source]
       end
@@ -735,6 +769,15 @@ class Account::ProviderImportAdapter
       )
 
       entry.save!
+
+      # Coins arriving in a wallet are its deposits (GoalPledge.deposit_trade?).
+      # After commit, because a wallet writes the trade inside its own
+      # transaction. A re-imported trade is skipped by the reconciler once
+      # stamped.
+      if GoalPledge.deposit_trade?(entry) && account_linked_to_any_goal?
+        GoalPledge::Reconciler.run_after_commit(entry)
+      end
+
       entry
     end
   end
@@ -794,10 +837,13 @@ class Account::ProviderImportAdapter
     # 5. Entry type is Transaction (not Trade or Valuation)
     # 6. Optionally same name (if name parameter is provided)
     # 7. Not in the excluded IDs list (if provided)
+    # 8. Not a part of a split entry: a person's share of another movement,
+    #    never a copy of the incoming one
     query = account.entries
                    .where(entryable_type: "Transaction")
                    .where(amount: amount)
                    .where(currency: currency)
+                   .where(parent_entry_id: nil)
 
     query = if date_window.to_i.zero?
       query.where(date: date)
@@ -824,6 +870,25 @@ class Account::ProviderImportAdapter
     candidates.to_a.min_by { |entry| [ (entry.date - date).abs, entry.created_at ] }
   end
 
+  # Finds a manual transaction the user entered ahead of its date -- an
+  # upcoming bill or paycheck (see Entry#scheduled?) -- that the provider has
+  # now booked. Providers rarely book on exactly the expected day, so this
+  # allows a few days either side of it, but still requires the exact amount
+  # and currency. Only entries created before their own date qualify, so
+  # ordinary manual entries keep find_duplicate_transaction's exact-date rule.
+  #
+  # @return [Entry, nil] the closest-dated match, or nil
+  def find_scheduled_transaction(date:, amount:, currency:, date_window: SCHEDULED_MATCH_WINDOW_DAYS)
+    date = Date.parse(date.to_s) unless date.is_a?(Date)
+
+    account.entries
+      .where(entryable_type: "Transaction", external_id: nil, amount: amount, currency: currency)
+      .where(date: (date - date_window.days)..(date + date_window.days))
+      .where("entries.created_at < entries.date")
+      .to_a
+      .min_by { |entry| [ (entry.date - date).abs, entry.created_at ] }
+  end
+
   # Finds a pending transaction that likely matches a newly posted transaction
   # Used to reconcile pending→posted when SimpleFIN gives different IDs for the same transaction
   #
@@ -832,7 +897,7 @@ class Account::ProviderImportAdapter
   # @param currency [String] Currency code
   # @param source [String] Provider name (e.g., "simplefin")
   # @param date_window [Integer] Days to search around the posted date (default: 8)
-  # @return [Entry, nil] The pending entry or nil if not found
+  # @return [Entry, nil] The pending entry, or nil when none or several match
   def find_pending_transaction(date:, amount:, currency:, source:, date_window: 8)
     date = Date.parse(date.to_s) unless date.is_a?(Date)
 
@@ -852,9 +917,15 @@ class Account::ProviderImportAdapter
       .where(currency: currency)
       .where(date: (date - date_window.days)..date) # Pending must be ON or BEFORE posted date
       .where(Transaction.pending_sql("transactions"))
-      .order(date: :desc) # Prefer most recent pending transaction
+      .where(excluded: false)
+      .limit(2)
+      .to_a
 
-    candidates.first
+    # Amount, currency and date alone cannot tell two same-amount pendings apart,
+    # so only claim when the match is unambiguous (#2013). Otherwise the posted
+    # transaction is imported as a new entry and the pendings stay for the
+    # stale-pending cleanup.
+    candidates.size == 1 ? candidates.first : nil
   end
 
   # Finds a pending transaction using fuzzy amount matching for tip adjustments
@@ -1069,7 +1140,88 @@ class Account::ProviderImportAdapter
     }
   end
 
+  # Moves the user's corrections on a provider row that is about to be removed
+  # onto the row import_holding carries corrections from: the latest one of
+  # the same provider security on or before `date`. Returns that row, or nil
+  # when there is none or nothing to move.
+  def carry_corrections_back(from:, date:)
+    corrections = corrections_from(from, provider_security_id: from.provider_security_id || from.security_id)
+    return if corrections.empty?
+
+    target = previous_holding_for(security: from.provider_security || from.security, currency: from.currency,
+                                  date: date + 1, account_provider_id: from.account_provider_id)
+    return if target.nil?
+
+    # A remap onto a security the target's date already holds would break the
+    # unique (account, security, date, currency) index. The target folds into
+    # that row instead, as Holding#remap_security! merges a collision. Another
+    # provider's row is that provider's position and is never folded into: the
+    # target keeps its own security and the remap is dropped, which is logged.
+    collision = corrections.key?(:security) &&
+      account.holdings.where.not(id: target.id)
+        .find_by(security: corrections[:security], date: target.date, currency: target.currency)
+    return target.tap { |row| row.update!(corrections) } unless collision
+
+    if collision.account_provider_id.present? && collision.account_provider_id != target.account_provider_id
+      Rails.logger.warn(
+        "ProviderImportAdapter: cross-provider remap collision for account=#{account.id} security=#{corrections[:security].id} date=#{target.date} currency=#{target.currency}; keeping existing id=#{collision.id}"
+      )
+      return target.tap { |row| row.update!(corrections.except(:security, :provider_security_id, :security_locked)) }
+    end
+
+    target.assign_attributes(corrections.except(:security, :provider_security_id, :security_locked))
+    merge_holding_into!(target, collision)
+  end
+
   private
+    # Folds `holding` into `existing`, a row of another security on the same
+    # date and currency, with the arithmetic of Holding#remap_security!'s
+    # collision merge: quantities and amounts add, cost basis is the weighted
+    # average when both have one, and the provider tracking moves across.
+    # Returns `existing`.
+    def merge_holding_into!(holding, existing)
+      merged_qty = existing.qty + holding.qty
+      merged_amount = existing.amount + holding.amount
+      merged_cost_basis = if existing.cost_basis.present? && holding.cost_basis.present? && merged_qty.positive?
+        ((existing.cost_basis * existing.qty) + (holding.cost_basis * holding.qty)) / merged_qty
+      else
+        existing.cost_basis
+      end
+
+      merge_attrs = {
+        qty: merged_qty,
+        amount: merged_amount,
+        price: merged_qty.positive? ? merged_amount / merged_qty : 0,
+        cost_basis: merged_cost_basis,
+        security_locked: true
+      }
+      merge_attrs[:external_id] = holding.external_id if existing.external_id.blank? && holding.external_id.present?
+      merge_attrs[:provider_security_id] = holding.provider_security_id || holding.security_id if existing.provider_security_id.blank?
+      merge_attrs[:account_provider_id] = holding.account_provider_id if existing.account_provider_id.blank? && holding.account_provider_id.present?
+
+      Holding.transaction(requires_new: true) do
+        holding.destroy!
+        existing.update!(merge_attrs)
+      end
+      existing
+    end
+
+    # The user's corrections a row holds: a remapped security and a locked
+    # cost basis, as attributes for the row that takes them over.
+    def corrections_from(holding, provider_security_id:)
+      corrections = {}
+      if holding&.security_locked?
+        corrections[:security] = holding.security
+        corrections[:provider_security_id] = holding.provider_security_id || provider_security_id
+        corrections[:security_locked] = true
+      end
+      if holding&.cost_basis_locked?
+        corrections[:cost_basis] = holding.cost_basis
+        corrections[:cost_basis_source] = holding.cost_basis_source
+        corrections[:cost_basis_locked] = true
+      end
+      corrections
+    end
 
     # The latest earlier holding of the security the provider reports. A
     # remapped row records that security in provider_security_id; an
@@ -1121,7 +1273,7 @@ class Account::ProviderImportAdapter
     def account_linked_to_any_goal?
       return @account_linked_to_any_goal if defined?(@account_linked_to_any_goal)
 
-      @account_linked_to_any_goal = account.goal_accounts.exists?
+      @account_linked_to_any_goal = account.linked_to_goal?
     end
 
     # Writes provider-owned metadata onto the transaction.

@@ -4,7 +4,7 @@ class PropertiesController < ApplicationController
   before_action :set_property, only: [ :balances, :address, :update_balances, :update_address, :refresh_valuation, :link_valuation ]
   before_action :require_property_write_permission!, only: [ :update_balances, :update_address, :refresh_valuation, :link_valuation ]
 
-  helper_method :avm_provider_class
+  helper_method :avm_provider_class, :purchase_value
 
   def new
     @account = Current.family.accounts.build(accountable: Property.new)
@@ -22,6 +22,9 @@ class PropertiesController < ApplicationController
         currency: property_params[:currency].presence || Current.family.currency
       )
     )
+    # Details typed into the manual wizard are user-set, so a later AVM link
+    # sends the user's area rather than deferring to the provider's record.
+    @account.accountable.lock_saved_attributes!
     @account.auto_share_with_family! if Current.family.share_all_by_default?
 
     redirect_to balances_property_path(@account)
@@ -29,6 +32,7 @@ class PropertiesController < ApplicationController
 
   def update
     if @account.update(property_params)
+      @account.accountable.lock_saved_attributes!
       @success_message = "Property details updated successfully."
 
       if @account.active?
@@ -49,10 +53,22 @@ class PropertiesController < ApplicationController
   end
 
   def update_balances
+    if balance_params[:currency].present? && !known_currency?(balance_params[:currency])
+      return render_balances_error(t(".invalid_currency"))
+    end
+
+    if @account.draft? && !purchase_value.valid_date?
+      return render_balances_error(t(".invalid_purchase_date"))
+    end
+
     result = nil
     Account.transaction do
       @account.update!(currency: balance_params[:currency]) if balance_params[:currency].present?
-      result = @account.set_current_balance(balance_params[:balance].to_d)
+      result = if @account.draft?
+        purchase_value.save(balance_params[:balance].to_d)
+      else
+        @account.set_current_balance(balance_params[:balance].to_d)
+      end
       raise ActiveRecord::Rollback unless result.success?
     end
 
@@ -65,8 +81,7 @@ class PropertiesController < ApplicationController
         redirect_to address_property_path(@account)
       end
     else
-      @error_message = result&.error_message
-      render :balances, status: :unprocessable_entity
+      render_balances_error(result&.error)
     end
   end
 
@@ -272,7 +287,28 @@ class PropertiesController < ApplicationController
     end
 
     def balance_params
-      params.require(:account).permit(:balance, :currency)
+      params.require(:account).permit(:balance, :currency, :purchase_date)
+    end
+
+    def purchase_value
+      @purchase_value ||= Property::PurchaseValue.new(
+        @account, date: (balance_params[:purchase_date] if params[:account].is_a?(ActionController::Parameters))
+      )
+    end
+
+    # Re-renders the value step with what the user typed, not the saved value.
+    # A currency the app doesn't know is left out, since the form can't render it.
+    def render_balances_error(message)
+      submitted = balance_params.slice(:balance, :currency).compact_blank
+      submitted.delete(:currency) unless known_currency?(submitted[:currency])
+      @account.assign_attributes(submitted)
+      @submitted_balance = submitted.key?(:balance)
+      @error_message = message
+      render :balances, status: :unprocessable_entity
+    end
+
+    def known_currency?(code)
+      Money::Currency.all.key?(code.to_s.downcase)
     end
 
     def address_params
@@ -289,7 +325,7 @@ class PropertiesController < ApplicationController
               :institution_name,
               :institution_domain,
               :notes,
-              accountable_attributes: [ :id, :subtype, :year_built, :area_unit, :area_value ]
+              accountable_attributes: [ :id, :subtype, :year_built, :area_unit, :area_value, :cost_tag_id ]
             )
     end
 

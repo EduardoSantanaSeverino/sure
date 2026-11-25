@@ -3,6 +3,7 @@ class Provider::Plaid
 
   SUPPORTED_PLAID_PRODUCTS = %w[transactions investments liabilities].freeze
   MAX_HISTORY_DAYS = Rails.env.development? ? 90 : 730
+  MAX_TRANSACTION_SYNC_RETRIES = 3
 
   def initialize(config, region: :us)
     @client = Plaid::PlaidApi.new(
@@ -58,6 +59,8 @@ class Provider::Plaid
     else
       request_params[:transactions] = { days_requested: MAX_HISTORY_DAYS }
       request_params[:products] = [ get_primary_product(accountable_type) ]
+      optional = get_optional_products(accountable_type)
+      request_params[:optional_products] = optional if optional.any?
       request_params[:additional_consented_products] = get_additional_consented_products(accountable_type)
     end
 
@@ -90,31 +93,52 @@ class Provider::Plaid
   end
 
   def get_transactions(access_token, next_cursor: nil)
-    cursor = next_cursor
-    added = []
-    modified = []
-    removed = []
-    has_more = true
+    retries = 0
 
-    while has_more
-      request = Plaid::TransactionsSyncRequest.new(
-        access_token: access_token,
-        cursor: cursor,
-        options: {
-          include_original_description: true
-        }
+    begin
+      cursor = next_cursor
+      added = []
+      modified = []
+      removed = []
+      has_more = true
+
+      while has_more
+        request = Plaid::TransactionsSyncRequest.new(
+          access_token: access_token,
+          cursor: cursor,
+          count: 500,
+          options: {
+            include_original_description: true
+          }
+        )
+
+        response = client.transactions_sync(request)
+
+        added += response.added
+        modified += response.modified
+        removed += response.removed
+        has_more = response.has_more
+        cursor = response.next_cursor
+      end
+
+      TransactionSyncResponse.new(added:, modified:, removed:, cursor:)
+    rescue Plaid::ApiError => error
+      error_code = plaid_error_code(error)
+      raise unless error_code == "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" && retries < MAX_TRANSACTION_SYNC_RETRIES
+
+      retries += 1
+      DebugLogEntry.capture(
+        category: "provider_sync",
+        level: "info",
+        message: "Restarting Plaid transaction pagination after data changed",
+        source: self.class.name,
+        provider_key: "plaid",
+        metadata: { error_code: error_code, retry_count: retries }
       )
 
-      response = client.transactions_sync(request)
-
-      added += response.added
-      modified += response.modified
-      removed += response.removed
-      has_more = response.has_more
-      cursor = response.next_cursor
+      # A changed page invalidates the whole update, including accumulated rows.
+      retry
     end
-
-    TransactionSyncResponse.new(added:, modified:, removed:, cursor:)
   end
 
   def refresh_transactions(access_token)
@@ -150,6 +174,13 @@ class Provider::Plaid
   end
 
   private
+    def plaid_error_code(error)
+      body = JSON.parse(error.response_body.to_s)
+      body["error_code"] if body.is_a?(Hash)
+    rescue JSON::ParserError
+      nil
+    end
+
     TransactionSyncResponse = Struct.new :added, :modified, :removed, :cursor, keyword_init: true
     InvestmentsResponse = Struct.new :holdings, :transactions, :securities, keyword_init: true
 
@@ -186,26 +217,35 @@ class Provider::Plaid
     end
 
     # The primary Plaid product to request for a given Sure account type.
-    # Investments map to the `investments` product, liability accounts
-    # (CreditCard/Loan) to `liabilities`, everything else to `transactions`.
+    # Investments map to the `investments` product, loans to `liabilities`,
+    # everything else (including credit cards) to `transactions`.
     def get_primary_product(accountable_type)
       return "transactions" if eu?
 
       case accountable_type
       when "Investment"
         "investments"
-      when "CreditCard", "Loan"
+      when "Loan"
         "liabilities"
       else
         "transactions"
       end
     end
 
+    # Credit cards ask for `liabilities` (APR, statement balance, minimum
+    # payment) on a best-effort basis: an issuer without it, or a failed
+    # extraction, still creates the Item with transactions.
+    def get_optional_products(accountable_type)
+      return [] if eu?
+
+      accountable_type == "CreditCard" ? [ "liabilities" ] : []
+    end
+
     # Additional Plaid products to consent to alongside the primary product.
     #
-    # We only request the `liabilities` product when the account being linked is
-    # itself a liability (CreditCard/Loan). Plaid's Link filters out any
-    # institution that does not support every requested product, so asking for
+    # Only liability links request the `liabilities` product: loans as the
+    # primary product, credit cards as an optional one. Plaid's Link filters out
+    # any institution that does not support every requested product, so asking for
     # `liabilities` on e.g. an Investment link silently hides investment-only
     # brokerages like E*TRADE that don't offer it.
     def get_additional_consented_products(accountable_type)

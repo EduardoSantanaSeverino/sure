@@ -136,7 +136,11 @@ class Loan < ApplicationRecord
   # place the column is parsed: RateResolver and the form rows read these
   # pairs rather than the raw JSON, so every reader agrees on what a row means.
   def variable_rates
-    (variable_rate_schedule || {})
+    parse_rate_schedule(variable_rate_schedule)
+  end
+
+  private def parse_rate_schedule(schedule)
+    (schedule || {})
       .map { |date, rate| [ Date.iso8601(date.to_s), BigDecimal(rate.to_s) ] }
       .sort_by(&:first)
   end
@@ -149,6 +153,93 @@ class Loan < ApplicationRecord
     RateResolver.for(self).accrual_rate_for(as_of)
   end
 
+  # Account updates can save their nested loan, and loan saves touch the account.
+  # Always lock the account first so both paths acquire rows in the same order.
+  # A bare save of a persisted loan takes the reverse order (Loan, then Account
+  # through Accountable's `touch: true`), so write existing loans through this
+  # helper or two writers can deadlock.
+  # Nested provider writes share the locks without reloading assigned values.
+  def with_schedule_lock
+    return yield if new_record? || @schedule_lock_held
+
+    self.class.transaction do
+      association(:account).scope.lock.pick(:id)
+      with_lock do
+        @schedule_lock_held = true
+        begin
+          yield
+        ensure
+          @schedule_lock_held = false
+        end
+      end
+    end
+  end
+
+  # Provider updates may have been assembled from an older Loan instance.
+  # Apply only their dated changes to the schedule read under the row lock.
+  def enrich_attributes(attrs, **options)
+    key = attrs.keys.find { |name| name.to_s == "variable_rate_schedule" }
+    baseline = (variable_rate_schedule || {}).stringify_keys
+    with_schedule_lock do
+      updates = key ? attrs.merge(key => merge_rate_schedule(attrs[key], baseline: baseline)) : attrs
+      super(updates, **options)
+    end
+  end
+
+  # Keep the rendered schedule so a form can delete its own rows without
+  # deleting dates a provider added after the form was opened.
+  def rate_schedule_snapshot
+    (variable_rate_schedule_in_database || {}).to_json
+  end
+
+  def rate_schedule_snapshot=(snapshot)
+    @rate_schedule_snapshot = snapshot
+    @rate_schedule_reconciliation = nil
+  end
+
+  # What a provider should write when it reports this variable loan's rate on
+  # `as_of`, or nil when there is nothing to write. Writes nothing itself, so
+  # the provider's own writer keeps locks, provenance and refusal handling.
+  #
+  # - A first sighting (no base rate yet) sets the base rate: a first reading
+  #   is not evidence that the rate moved on any particular day.
+  # - A rate equal to the one in force on `as_of` is not a change. A row
+  #   already dated `as_of` is the rate in force on `as_of`, so this also
+  #   covers a second sync on the same day.
+  # - Otherwise the change is a row dated `as_of`. The base rate stays, since
+  #   replacing it would re-price every period before the change.
+  # - A loan that is not variable gets nil; what a fixed loan does with a
+  #   reported rate is the caller's decision.
+  #
+  # Rounded to three places, the precision of `interest_rate`, so a reading a
+  # hair off the stored rate is not taken for a change on every sync.
+  #
+  # A rate outside 0..MAX_INTEREST_RATE gets nil. The form rejects one, and
+  # nothing checks a schedule written any other way, so a provider reporting
+  # -1% or 150% has sent something other than a rate. So has one that is not
+  # a number at all, which gets nil too rather than raising out of the sync.
+  # The bound is checked before rounding, which would otherwise carry -0.0004
+  # or 100.0004 onto 0 or 100.
+  def variable_rate_update_for(reported_rate, as_of:)
+    return nil if reported_rate.nil? || !variable_rate_type?
+
+    rate = begin
+      BigDecimal(reported_rate.to_s)
+    rescue ArgumentError, TypeError, FloatDomainError
+      nil
+    end
+    return nil unless rate&.finite? && rate.between?(0, MAX_INTEREST_RATE)
+
+    rate = rate.round(3)
+    return { interest_rate: rate } if interest_rate.blank?
+
+    in_force = current_variable_rate(as_of)
+    return nil if in_force.present? && BigDecimal(in_force.to_s) == rate
+
+    schedule = (variable_rate_schedule || {}).stringify_keys
+    { variable_rate_schedule: schedule.merge(as_of.to_date.iso8601 => rate.to_s("F")) }
+  end
+
   # Rows the form submitted that could not be parsed. Kept so the save can be
   # rejected and the form re-rendered with what the user actually typed --
   # dropping them silently loses a typo'd row between submit and redisplay,
@@ -157,6 +248,9 @@ class Loan < ApplicationRecord
 
   validate :rate_changes_must_be_parseable
   validate :rate_changes_must_not_precede_origination
+  validate :rate_schedule_snapshot_must_be_valid
+  before_validation :merge_submitted_rate_changes
+  after_save :clear_rate_submission
 
   # Assembles variable_rate_schedule from the form's rows.
   #
@@ -204,7 +298,75 @@ class Loan < ApplicationRecord
     end
 
     @invalid_rate_changes = invalid
+    @submitted_rate_changes = parsed
+    @rate_schedule_reconciliation = nil
     self.variable_rate_schedule = parsed
+  end
+
+  # Assigns the reconciled schedule once per submission. Later validations
+  # leave the attribute alone, so a value assigned after the first one stays.
+  private def merge_submitted_rate_changes
+    reconciliation = rate_schedule_reconciliation
+    return if reconciliation.nil? || reconciliation[:applied]
+
+    self.variable_rate_schedule = reconciliation[:schedule]
+    reconciliation[:applied] = true
+  end
+
+  # The submitted rows applied to the schedule read from the database, or that
+  # schedule unchanged when the snapshot is malformed. Computed once per
+  # submission without assigning attributes, so the form can render it before
+  # validations run. Nil when there is no snapshot to reconcile against.
+  private def rate_schedule_reconciliation
+    return unless @submitted_rate_changes && @rate_schedule_snapshot
+
+    @rate_schedule_reconciliation ||= begin
+      baseline = JSON.parse(@rate_schedule_snapshot)
+      raise JSON::ParserError unless baseline.is_a?(Hash)
+
+      schedule = merge_rate_schedule(
+        @submitted_rate_changes, baseline: baseline,
+        current: variable_rate_schedule_in_database
+      )
+      { valid: true, schedule: schedule, applied: false }
+    rescue JSON::ParserError, TypeError
+      { valid: false, schedule: variable_rate_schedule_in_database || {}, applied: false }
+    end
+  end
+
+  private def rate_schedule_snapshot_must_be_valid
+    errors.add(:base, :invalid_rate_schedule_snapshot) if rate_schedule_reconciliation&.dig(:valid) == false
+  end
+
+  # Applies a submitter's edits to the schedule as it is now, given the
+  # baseline the submitter saw. A submitted row equal to its baseline rate is
+  # unchanged and does not overwrite the current value. A baseline date left
+  # out of the submission deletes only the rate the submitter saw: if someone
+  # else has changed that date since, their rate is kept. Any other submitted
+  # row wins.
+  private def merge_rate_schedule(submitted, baseline:, current: variable_rate_schedule)
+    baseline = (baseline || {}).stringify_keys
+    submitted = (submitted || {}).stringify_keys
+    current = (current || {}).stringify_keys
+    changed = submitted.reject { |date, rate| baseline.key?(date) && same_rate?(baseline[date], rate) }
+    removed = (baseline.keys - submitted.keys).select do |date|
+      current.key?(date) && same_rate?(current[date], baseline[date])
+    end
+    current.except(*removed).merge(changed)
+  end
+
+  # Compares rates by value, so "6", "6.0" and "0.6e1" are the same rate.
+  # Values that do not parse as numbers compare as text.
+  private def same_rate?(left, right)
+    left_rate = BigDecimal(left.to_s, exception: false)
+    right_rate = BigDecimal(right.to_s, exception: false)
+    left_rate && right_rate ? left_rate == right_rate : left.to_s == right.to_s
+  end
+
+  private def clear_rate_submission
+    @rate_schedule_snapshot = nil
+    @submitted_rate_changes = nil
+    @rate_schedule_reconciliation = nil
   end
 
   # The form reaches this record through Account's nested attributes, which
@@ -218,7 +380,8 @@ class Loan < ApplicationRecord
   # loan that has recorded rate changes and no start date; every other loan
   # answers from its own attributes.
   def changed_for_autosave?
-    super || invalid_rate_changes.present? || rate_changes_precede_origination?
+    super || invalid_rate_changes.present? || rate_changes_precede_origination? ||
+      (@rate_schedule_snapshot.present? && !@submitted_rate_changes.nil?)
   end
 
   # Form rows, in a shape the form can render without parsing anything.
@@ -231,7 +394,12 @@ class Loan < ApplicationRecord
   #
   # Invalid rows come back too, so a rejected save redisplays what was typed.
   def rate_change_rows
-    variable_rates.map { |date, rate| { effective_date: date.iso8601, rate: rate.to_s("F") } } +
+    # A balance failure can render before validations run, so rows come from
+    # the pending reconciliation until it is assigned. Reading them assigns
+    # nothing and adds no errors; validation owns both.
+    reconciliation = rate_schedule_reconciliation
+    schedule = reconciliation && !reconciliation[:applied] ? reconciliation[:schedule] : variable_rate_schedule
+    parse_rate_schedule(schedule).map { |date, rate| { effective_date: date.iso8601, rate: rate.to_s("F") } } +
       Array(invalid_rate_changes)
   end
 
@@ -270,9 +438,52 @@ class Loan < ApplicationRecord
     end
   end
 
+  # The balance replay reads these columns. A save without a sync leaves the
+  # stored rows on the old calculation until the next scheduled sync.
+  BALANCE_INPUTS = (SCHEDULE_INPUTS + INSURANCE_INPUTS + %i[initial_balance principal_only_transfers]).freeze
+
+  # `lock_saved_attributes!` saves the loan a second time in the same
+  # transaction. A commit condition that reads saved changes would see only
+  # that second save, so remember the input change until the commit runs.
+  after_update :remember_balance_input_change
+  after_update_commit :sync_balance_after_change, if: :balance_inputs_changed?
+  after_rollback :forget_balance_input_change
+
+  private def remember_balance_input_change
+    return unless BALANCE_INPUTS.any? { |input| saved_change_to_attribute?(input) }
+
+    @balance_inputs_changed = true
+  end
+
+  private def balance_inputs_changed?
+    @balance_inputs_changed == true
+  end
+
+  private def sync_balance_after_change
+    @balance_inputs_changed = false
+    return unless account
+
+    # A running sync cannot widen its window, so reusing it would keep the
+    # balance seeded from the old window. Mark it for a full sync after it
+    # finishes.
+    if (sync = account.syncs.visible.where(status: "syncing").first)
+      sync.update!(full_resync_requested: true)
+      # The sync can finish between the lookup and the update. Its own
+      # completion check may already have run, so queue the full sync here.
+      account.sync_later unless sync.reload.syncing?
+    else
+      account.sync_later
+    end
+  end
+
+  private def forget_balance_input_change
+    @balance_inputs_changed = false
+  end
+
   def reload(*)
     @amortization_schedule = nil
     @insurance = nil
+    clear_rate_submission
     super
   end
 
@@ -431,10 +642,11 @@ class Loan < ApplicationRecord
     LEVERAGE_BANDS.find { |_band, range| range.cover?(ratio) }&.first
   end
 
-  # Where the loan is heading from today's balance. Not memoised: `as_of`
-  # makes each call a different question.
-  def payoff_projection(as_of: Date.current)
-    PayoffProjection.new(self, as_of: as_of)
+  # Where the loan is heading from today's balance, optionally with an extra
+  # amount paid weekly, fortnightly or with every repayment. Not memoised:
+  # each argument makes each call a different question.
+  def payoff_projection(as_of: Date.current, extra: nil, extra_frequency: "monthly")
+    PayoffProjection.new(self, as_of: as_of, extra: extra, extra_frequency: extra_frequency)
   end
 
   # The date the loan was drawn down. Recorded explicitly when the borrower
